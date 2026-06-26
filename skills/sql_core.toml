@@ -1,0 +1,14 @@
+[skill]
+name = "sql_core"
+description = "Shared SQL building blocks (identifiers, values, conditions)"
+
+[grammar]
+root = "ident"
+
+[grammar.rules]
+ident = '/[a-zA-Z_][a-zA-Z0-9_]*/'
+value = 'number | string_lit'
+number = '/[0-9]+/'
+string_lit = "\"'\" /[^']*/ \"'\""
+comparator = '"=" | "<" | ">" | "<=" | ">=" | "!="'
+condition = 'ident " "? comparator " "? value'

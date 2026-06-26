@@ -1,0 +1,18 @@
+[skill]
+name = "sql_select"
+description = "Generate a valid SQL SELECT statement (SELECT-only by construction: no INSERT/UPDATE/DELETE is derivable from this grammar)"
+imports = ["sql_core"]
+system_prompt = "Output exactly one SQL SELECT statement. No prose, no markdown."
+
+[grammar]
+root = "select_stmt"
+
+[grammar.rules]
+select_stmt = '"SELECT " select_list " FROM " ident where_clause? order_clause? ";"'
+select_list = '"*" | ident ("," " "? ident)*'
+where_clause = '" WHERE " condition (" AND " condition)*'
+order_clause = '" ORDER BY " ident (" ASC" | " DESC")?'
+
+[sampling]
+temperature = 0.1
+max_tokens = 128

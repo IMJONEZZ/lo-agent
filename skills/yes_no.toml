@@ -1,0 +1,14 @@
+[skill]
+name = "yes_no"
+description = "A single yes/no verdict — useful as a cheap verifier"
+system_prompt = "Answer the question with exactly 'yes' or 'no'."
+
+[grammar]
+root = "verdict"
+
+[grammar.rules]
+verdict = '"yes" | "no"'
+
+[sampling]
+temperature = 0.0
+max_tokens = 4

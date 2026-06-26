@@ -1,0 +1,44 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.PYP?
+*.so
+
+# Python runtime environments
+.venv/
+.venv
+venv/
+ENV/
+env/
+
+# Test / coverage reports
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# User-specific config (Claude, VSCode, etc.)
+.claude/
+.codemode/
+
+# Local data (SQLite databases, memory stores)
+*.db
+harness.db
+memory.db
+
+# Demo artifacts (cast recordings, videos, scripts)
+demos/
+*.cast
+*.mp4
+*.png
+
+# Documentation and planning (not needed for install/function)
+docs/
+thoughts/
+profiles/
+
+# Misc
+results.txt

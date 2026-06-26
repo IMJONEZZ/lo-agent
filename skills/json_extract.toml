@@ -1,0 +1,22 @@
+[skill]
+name = "json_extract"
+description = "Extract entities into a fixed JSON shape"
+system_prompt = "Extract the requested data as JSON. Output only the JSON object."
+
+[grammar.json_schema]
+type = "object"
+required = ["name", "category", "confidence"]
+
+[grammar.json_schema.properties.name]
+type = "string"
+
+[grammar.json_schema.properties.category]
+type = "string"
+enum = ["person", "place", "organization", "other"]
+
+[grammar.json_schema.properties.confidence]
+type = "number"
+
+[sampling]
+temperature = 0.2
+max_tokens = 128
