@@ -34,7 +34,7 @@ native = ["torch>=2.4", "transformers>=4.48", "peft>=0.14", "accelerate>=1.0"]
 sandbox = ["microsandbox"]
 
 [project.scripts]
-harness = "local_harness.cli.main:main"
+lo = "local_harness.cli.main:main"
 
 [dependency-groups]
 dev = [

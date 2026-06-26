@@ -1,7 +1,7 @@
 """A single-file web client for the session server.
 
 Served at GET / by the same Starlette app that runs the SSE bus, so it's
-same-origin (no CORS) and works over `harness serve` / `harness daemon`. Vanilla
+same-origin (no CORS) and works over `lo serve` / `lo daemon`. Vanilla
 JS — no build step. Full control: list/start sessions, stream live, send
 follow-ups, interrupt, and approve/deny tool calls from the browser. Themed to
 match the TUI's Osaka Jade palette.

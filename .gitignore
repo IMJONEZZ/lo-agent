@@ -39,6 +39,10 @@ demos/
 docs/
 thoughts/
 profiles/
+local_llm_advantages_plan.md
+
+# Local harness memory/state
+.harness/
 
 # Misc
 results.txt

@@ -1,7 +1,7 @@
 """Pub/sub over the event log — the substrate for the OpenCode-style server.
 
 OpenCode's UX comes from a headless server with a pub/sub bus: many clients
-(TUI, web, `harness tail`) subscribe over SSE and all observe one live session.
+(TUI, web, `lo tail`) subscribe over SSE and all observe one live session.
 Our `EventLog` is already the append-only store; this layers a broadcaster on top.
 
 Two channels, and the split is the whole point:
@@ -29,10 +29,10 @@ from typing import AsyncIterator
 from .log import RUN_COMPLETED, RUN_FAILED, Event, EventLog
 
 # Ephemeral event types — broadcast live, never persisted, seq is always -1.
-TOKEN_DELTA = "token_delta"          # payload: {text}
+TOKEN_DELTA = "token_delta"  # payload: {text}
 REASONING_DELTA = "reasoning_delta"  # payload: {text}
-TOOL_PROGRESS = "tool_progress"      # payload: {name, phase}  (start|done)
-NOTICE = "notice"                    # payload: {message} — a one-off human-readable hint
+TOOL_PROGRESS = "tool_progress"  # payload: {name, phase}  (start|done)
+NOTICE = "notice"  # payload: {message} — a one-off human-readable hint
 PERMISSION_REQUEST = "permission_request"  # payload: {request_id, tool, arguments} — ask the client to approve a tool
 
 # The terminal event types a one-shot follow should stop on.
@@ -43,7 +43,7 @@ class EventBus:
     def __init__(self, log: EventLog):
         self.log = log
         self._subs: dict[str, set[asyncio.Queue]] = {}
-        log.add_listener(self._broadcast)   # persisted events flow through here
+        log.add_listener(self._broadcast)  # persisted events flow through here
 
     # --- publish ---------------------------------------------------------
 
@@ -54,8 +54,15 @@ class EventBus:
     def publish_delta(self, run_id: str, type: str, payload: dict) -> None:
         """Broadcast an EPHEMERAL event (token/reasoning/tool progress) to live
         subscribers only — never persisted, so replay stays clean."""
-        self._broadcast(Event(run_id=run_id, seq=-1, type=type, payload=payload,
-                              created_at=time.time()))
+        self._broadcast(
+            Event(
+                run_id=run_id,
+                seq=-1,
+                type=type,
+                payload=payload,
+                created_at=time.time(),
+            )
+        )
 
     def _broadcast(self, ev: Event) -> None:
         for q in list(self._subs.get(ev.run_id, ())):
@@ -64,7 +71,10 @@ class EventBus:
     # --- subscribe -------------------------------------------------------
 
     async def subscribe(
-        self, run_id: str, *, replay: bool = True,
+        self,
+        run_id: str,
+        *,
+        replay: bool = True,
         stop_on: set[str] | None = None,
     ) -> AsyncIterator[Event]:
         """Yield events for a run: catch-up from seq 0 (if replay), then live.

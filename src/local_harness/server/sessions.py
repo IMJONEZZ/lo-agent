@@ -15,7 +15,12 @@ from typing import AsyncIterator, Callable
 
 from ..agent.loop import Agent
 from ..events.bus import (
-    EventBus, NOTICE, PERMISSION_REQUEST, REASONING_DELTA, TERMINAL, TOKEN_DELTA,
+    EventBus,
+    NOTICE,
+    PERMISSION_REQUEST,
+    REASONING_DELTA,
+    TERMINAL,
+    TOKEN_DELTA,
     TOOL_PROGRESS,
 )
 from ..events.log import AGENT_SPAWNED, Event, RUN_COMPLETED, RUN_FAILED
@@ -34,15 +39,19 @@ AgentFactory = Callable[..., Agent]
 
 
 class SessionManager:
-    def __init__(self, bus: EventBus, agent_factory: AgentFactory,
-                 interactive_permissions: bool = False,
-                 permission_timeout: float = 120.0):
+    def __init__(
+        self,
+        bus: EventBus,
+        agent_factory: AgentFactory,
+        interactive_permissions: bool = False,
+        permission_timeout: float = 120.0,
+    ):
         self.bus = bus
         self.agent_factory = agent_factory
         # When True, an "ask"-tier tool pauses the run and asks the connected
         # client(s) over the bus (PERMISSION_REQUEST) instead of auto-approving.
         # The TUI's embedded server sets this (unless --allow-all); standalone
-        # `harness serve` defaults False (headless) unless --approval prompt.
+        # `lo serve` defaults False (headless) unless --approval prompt.
         self.interactive_permissions = interactive_permissions
         self.permission_timeout = permission_timeout
         self._pending_perms: dict[str, asyncio.Future] = {}
@@ -62,15 +71,18 @@ class SessionManager:
             self.bus.publish_delta(run_id, t, {"text": text})
 
         def on_tool(name: str, phase: str) -> None:
-            self.bus.publish_delta(run_id, TOOL_PROGRESS, {"name": name, "phase": phase})
+            self.bus.publish_delta(
+                run_id, TOOL_PROGRESS, {"name": name, "phase": phase}
+            )
 
         def on_notice(msg: str) -> None:
             self.bus.publish_delta(run_id, NOTICE, {"message": msg})
 
         return on_token, on_tool, on_notice
 
-    def _agent_for(self, run_id: str, preset: str | None = None,
-                   code_mode: bool | None = None) -> Agent:
+    def _agent_for(
+        self, run_id: str, preset: str | None = None, code_mode: bool | None = None
+    ) -> Agent:
         agent = self.agent_factory(*self._callbacks(run_id), preset=preset)
         if code_mode is not None:  # per-request override of the factory default
             agent.code_mode = code_mode
@@ -88,6 +100,7 @@ class SessionManager:
         tools = getattr(agent, "tools", None)
         if tools is not None:
             from .coordinator import send_message_tool, spawn_agents_tool
+
             tools.register(send_message_tool(self, run_id))
             if self._depth.get(run_id, 0) < MAX_COORDINATOR_DEPTH:
                 tools.register(spawn_agents_tool(self, run_id))
@@ -99,14 +112,18 @@ class SessionManager:
         """Start a worker run for `task`, tagged as a child of `parent_run_id`."""
         run_id = self.bus.create_run(task)
         self._depth[run_id] = self._depth.get(parent_run_id, 0) + 1
-        self.bus.log.append(parent_run_id, AGENT_SPAWNED,
-                            {"child_run_id": run_id, "task": task})
-        self._spawn(run_id, self._drive(
-            run_id, lambda a: a.run(task, run_id=run_id), preset=preset))
+        self.bus.log.append(
+            parent_run_id, AGENT_SPAWNED, {"child_run_id": run_id, "task": task}
+        )
+        self._spawn(
+            run_id,
+            self._drive(run_id, lambda a: a.run(task, run_id=run_id), preset=preset),
+        )
         return run_id
 
     async def await_children(self, run_ids: list[str]) -> list[tuple[str, str]]:
         """Wait for each child run to terminate; return (run_id, answer)."""
+
         async def _one(rid: str) -> tuple[str, str]:
             try:
                 async for ev in self.bus.subscribe(rid, replay=True, stop_on=TERMINAL):
@@ -136,7 +153,9 @@ class SessionManager:
         rid = self._resolve_run(to_agent)
         if rid is None or not self.is_running(rid):
             return False
-        self._inbox.setdefault(rid, []).append(f"[message from agent {from_run_id[:8]}] {content}")
+        self._inbox.setdefault(rid, []).append(
+            f"[message from agent {from_run_id[:8]}] {content}"
+        )
         return True
 
     def _drain_inbox(self, run_id: str) -> list[str]:
@@ -145,6 +164,7 @@ class SessionManager:
     def _make_approver(self, run_id: str):
         async def approve(tool: str, arguments: str) -> bool:
             return await self.request_permission(run_id, tool, arguments)
+
         return approve
 
     async def request_permission(self, run_id: str, tool: str, arguments: str) -> bool:
@@ -156,8 +176,11 @@ class SessionManager:
         request_id = uuid.uuid4().hex[:12]
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
         self._pending_perms[request_id] = fut
-        self.bus.publish_delta(run_id, PERMISSION_REQUEST,
-                               {"request_id": request_id, "tool": tool, "arguments": arguments})
+        self.bus.publish_delta(
+            run_id,
+            PERMISSION_REQUEST,
+            {"request_id": request_id, "tool": tool, "arguments": arguments},
+        )
         try:
             return bool(await asyncio.wait_for(fut, self.permission_timeout))
         except asyncio.TimeoutError:
@@ -176,21 +199,41 @@ class SessionManager:
 
     # --- lifecycle -------------------------------------------------------
 
-    def start(self, task: str, preset: str | None = None,
-              code_mode: bool | None = None) -> str:
+    def start(
+        self, task: str, preset: str | None = None, code_mode: bool | None = None
+    ) -> str:
         """Create a run and drive an agent against it; returns the run_id."""
         run_id = self.bus.create_run(task)
-        self._spawn(run_id, self._drive(
-            run_id, lambda a: a.run(task, run_id=run_id), preset=preset, code_mode=code_mode))
+        self._spawn(
+            run_id,
+            self._drive(
+                run_id,
+                lambda a: a.run(task, run_id=run_id),
+                preset=preset,
+                code_mode=code_mode,
+            ),
+        )
         return run_id
 
-    def send(self, run_id: str, message: str, preset: str | None = None,
-             code_mode: bool | None = None) -> str:
+    def send(
+        self,
+        run_id: str,
+        message: str,
+        preset: str | None = None,
+        code_mode: bool | None = None,
+    ) -> str:
         """Continue an existing run with a new user turn."""
         if self.bus.log.run(run_id) is None:
             raise KeyError(run_id)
-        self._spawn(run_id, self._drive(
-            run_id, lambda a: a.continue_run(run_id, message), preset=preset, code_mode=code_mode))
+        self._spawn(
+            run_id,
+            self._drive(
+                run_id,
+                lambda a: a.continue_run(run_id, message),
+                preset=preset,
+                code_mode=code_mode,
+            ),
+        )
         return run_id
 
     async def plan(self, task: str, n: int = 4) -> list[dict]:
@@ -199,7 +242,9 @@ class SessionManager:
         model access of its own, so the server — which owns the live client+caps —
         runs plan_search on its behalf. We borrow the agent factory's bound client
         and capabilities (it closes over them) rather than holding a second copy."""
-        agent = self._agent_for("__plan__", preset=None)  # built only to reach its client/caps
+        agent = self._agent_for(
+            "__plan__", preset=None
+        )  # built only to reach its client/caps
         messages = [Message(role="user", content=task)]
         candidates = await plan_search(agent.client, agent.caps, messages, n=n)
         return [{"text": c.text, "score": c.score} for c in candidates]
@@ -212,7 +257,9 @@ class SessionManager:
             # coroutine entry, bypassing _drive's except — so _drive can't always
             # log the terminal. A finalizer awaits the settled task and guarantees
             # exactly one terminal event regardless of when the cancel landed.
-            self._finalizers.add(asyncio.ensure_future(self._ensure_terminal(run_id, task)))
+            self._finalizers.add(
+                asyncio.ensure_future(self._ensure_terminal(run_id, task))
+            )
             return True
         return False
 
@@ -229,10 +276,17 @@ class SessionManager:
         task = self._tasks.get(run_id)
         return task is not None and not task.done()
 
-    async def _drive(self, run_id: str, call, preset: str | None = None,
-                     code_mode: bool | None = None) -> None:
+    async def _drive(
+        self,
+        run_id: str,
+        call,
+        preset: str | None = None,
+        code_mode: bool | None = None,
+    ) -> None:
         try:
-            agent = self._agent_for(run_id, preset, code_mode)  # may fail (upstream down)
+            agent = self._agent_for(
+                run_id, preset, code_mode
+            )  # may fail (upstream down)
             await call(agent)
         except asyncio.CancelledError:
             raise  # the interrupt finalizer guarantees the terminal event
@@ -241,7 +295,9 @@ class SessionManager:
             # in agent construction (no upstream client/caps) happens before that —
             # guarantee a terminal so subscribers don't hang.
             if not any(ev.type in TERMINAL for ev in self.bus.log.events(run_id)):
-                self.bus.log.append(run_id, RUN_FAILED, {"error": f"{type(e).__name__}: {e}"})
+                self.bus.log.append(
+                    run_id, RUN_FAILED, {"error": f"{type(e).__name__}: {e}"}
+                )
         finally:
             self._tasks.pop(run_id, None)
 
@@ -252,14 +308,20 @@ class SessionManager:
 
     # --- read side -------------------------------------------------------
 
-    def stream(self, run_id: str, *, replay: bool = True,
-               stop_on: set[str] | None = None) -> AsyncIterator[Event]:
+    def stream(
+        self, run_id: str, *, replay: bool = True, stop_on: set[str] | None = None
+    ) -> AsyncIterator[Event]:
         return self.bus.subscribe(run_id, replay=replay, stop_on=stop_on)
 
     def sessions(self) -> list[dict]:
         return [
-            {"run_id": r.run_id, "task": r.task, "status": r.status,
-             "created_at": r.created_at, "running": self.is_running(r.run_id)}
+            {
+                "run_id": r.run_id,
+                "task": r.task,
+                "status": r.status,
+                "created_at": r.created_at,
+                "running": self.is_running(r.run_id),
+            }
             for r in self.bus.log.runs()
         ]
 

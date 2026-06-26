@@ -11,7 +11,7 @@ The client thinks it's talking to a smarter, better-behaved model:
   can't enforce them natively
 - think-budget and anti-slop requests route through the raw-completion paths
 
-Every proxied call logs to the event store — `harness replay` works on proxy
+Every proxied call logs to the event store — `lo replay` works on proxy
 traffic exactly like on agent runs.
 """
 
@@ -37,8 +37,9 @@ from ..skills.skill import Skill, SkillRegistry
 SKIP_THINK_PREFILL = "<think>\n\n</think>\n\n"
 
 
-def _synthesize(model: str, content: str, reasoning: str | None = None,
-                usage: dict | None = None) -> dict[str, Any]:
+def _synthesize(
+    model: str, content: str, reasoning: str | None = None, usage: dict | None = None
+) -> dict[str, Any]:
     message: dict[str, Any] = {"role": "assistant", "content": content}
     if reasoning:
         message["reasoning_content"] = reasoning
@@ -77,7 +78,9 @@ class ProxyEngine:
             self._bias_cache[profile_name] = stage
         return self._bias_cache[profile_name]
 
-    async def _resolve_pipeline(self, ext: dict, body: dict) -> tuple[dict, Skill | None, bool]:
+    async def _resolve_pipeline(
+        self, ext: dict, body: dict
+    ) -> tuple[dict, Skill | None, bool]:
         """Returns (body_params, validation_skill, emulated)."""
         pipeline = LogitPipeline()
         skill: Skill | None = None
@@ -87,11 +90,17 @@ class ProxyEngine:
             pipeline.add(GrammarStage(skill))
         elif isinstance(body.get("response_format"), dict):
             rf = body["response_format"]
-            schema = (rf.get("json_schema") or {}).get("schema") if rf.get("type") == "json_schema" else None
+            schema = (
+                (rf.get("json_schema") or {}).get("schema")
+                if rf.get("type") == "json_schema"
+                else None
+            )
             if schema:
                 skill = Skill(name="client_schema", json_schema=schema)
                 if self.caps.grammar is None and self.caps.server != "llama.cpp":
-                    body.pop("response_format", None)  # upstream can't enforce; we emulate
+                    body.pop(
+                        "response_format", None
+                    )  # upstream can't enforce; we emulate
                     emulated = True
         if ext.get("samplers"):
             pipeline.add(SamplerChain(ext["samplers"]))
@@ -100,7 +109,9 @@ class ProxyEngine:
 
         plan = pipeline.resolve(self.caps)
         grammar_status = plan.status_of("grammar")
-        emulated = emulated or (grammar_status is not None and grammar_status.value == "emulated")
+        emulated = emulated or (
+            grammar_status is not None and grammar_status.value == "emulated"
+        )
         return plan.body_params, skill, emulated
 
     # --- request handling ----------------------------------------------------
@@ -116,23 +127,35 @@ class ProxyEngine:
             messages = [Message.from_dict(m) for m in body.get("messages", [])]
             if ext.get("think_budget"):
                 r = await generate_with_think_budget(
-                    self.client, messages, think_budget=int(ext["think_budget"]),
-                    answer_max_tokens=body.get("max_tokens", 512), seed=body.get("seed"),
+                    self.client,
+                    messages,
+                    think_budget=int(ext["think_budget"]),
+                    answer_max_tokens=body.get("max_tokens", 512),
+                    seed=body.get("seed"),
                 )
                 response = _synthesize(body["model"], r.answer, reasoning=r.reasoning)
                 self.log.append(run_id, RUN_COMPLETED, {"answer": r.answer})
                 return response
             if ext.get("banned_phrases"):
                 r = await generate_antislop(
-                    self.client, messages, list(ext["banned_phrases"]),
-                    max_tokens=body.get("max_tokens", 256), seed=body.get("seed"),
+                    self.client,
+                    messages,
+                    list(ext["banned_phrases"]),
+                    max_tokens=body.get("max_tokens", 256),
+                    seed=body.get("seed"),
                     prefill=SKIP_THINK_PREFILL,
                 )
                 response = _synthesize(body["model"], r.text.strip())
-                self.log.append(run_id, GUARDRAIL, {
-                    "action": "antislop", "kind": "antislop", "rescued": False,
-                    "reason": f"{r.rewinds} rewinds",
-                })
+                self.log.append(
+                    run_id,
+                    GUARDRAIL,
+                    {
+                        "action": "antislop",
+                        "kind": "antislop",
+                        "rescued": False,
+                        "reason": f"{r.rewinds} rewinds",
+                    },
+                )
                 self.log.append(run_id, RUN_COMPLETED, {"answer": r.text.strip()})
                 return response
 
@@ -140,7 +163,8 @@ class ProxyEngine:
         tool_names = [t["function"]["name"] for t in body.get("tools", [])]
         validator = (
             ResponseValidator(tool_names, rescue_enabled=bool(ext.get("rescue")))
-            if tool_names else None
+            if tool_names
+            else None
         )
 
         messages_work = list(body.get("messages", []))
@@ -153,51 +177,91 @@ class ProxyEngine:
                 send["seed"] = base_seed + 1000 * attempt
             response = await self.client.chat_body(send)
             raw = response.raw
-            self.log.append(run_id, MODEL_CALL, {
-                "call_index": attempt, "seed": send.get("seed"),
-                "request_body": send, "response": raw,
-                "timing_ms": response.timing_ms, "logprob_summary": None,
-            })
+            self.log.append(
+                run_id,
+                MODEL_CALL,
+                {
+                    "call_index": attempt,
+                    "seed": send.get("seed"),
+                    "request_body": send,
+                    "response": raw,
+                    "timing_ms": response.timing_ms,
+                    "logprob_summary": None,
+                },
+            )
             message = response.message
 
             if validator is not None:
                 v = validator.validate(message)
                 if v.rescued:
                     choice = raw["choices"][0]
-                    choice["message"]["tool_calls"] = [tc.to_dict() for tc in v.tool_calls]
+                    choice["message"]["tool_calls"] = [
+                        tc.to_dict() for tc in v.tool_calls
+                    ]
                     choice["finish_reason"] = "tool_calls"
-                    self.log.append(run_id, GUARDRAIL, {
-                        "action": "execute", "kind": None, "rescued": True, "reason": None,
-                    })
+                    self.log.append(
+                        run_id,
+                        GUARDRAIL,
+                        {
+                            "action": "execute",
+                            "kind": None,
+                            "rescued": True,
+                            "reason": None,
+                        },
+                    )
                     break
                 if v.nudge is not None:
-                    self.log.append(run_id, GUARDRAIL, {
-                        "action": "nudge", "kind": v.nudge.kind, "rescued": False,
-                        "reason": None,
-                    })
+                    self.log.append(
+                        run_id,
+                        GUARDRAIL,
+                        {
+                            "action": "nudge",
+                            "kind": v.nudge.kind,
+                            "rescued": False,
+                            "reason": None,
+                        },
+                    )
                     messages_work = messages_work + [message.to_dict()]
                     if v.nudge.role == "tool" and message.tool_calls:
                         for tc in message.tool_calls:
-                            content = v.nudge.content if tc.id == v.nudge.tool_call_id else \
-                                "not executed: a sibling tool call in this batch was rejected"
-                            messages_work.append({"role": "tool", "content": content,
-                                                  "tool_call_id": tc.id})
+                            content = (
+                                v.nudge.content
+                                if tc.id == v.nudge.tool_call_id
+                                else "not executed: a sibling tool call in this batch was rejected"
+                            )
+                            messages_work.append(
+                                {
+                                    "role": "tool",
+                                    "content": content,
+                                    "tool_call_id": tc.id,
+                                }
+                            )
                     else:
-                        messages_work.append({"role": "user", "content": v.nudge.content})
+                        messages_work.append(
+                            {"role": "user", "content": v.nudge.content}
+                        )
                     continue
 
             if skill is not None and emulated and not message.tool_calls:
                 if not skill.validate_output((message.content or "").strip()):
                     if base_seed is None:
                         base_seed = 1
-                    self.log.append(run_id, GUARDRAIL, {
-                        "action": "nudge", "kind": "grammar_retry", "rescued": False,
-                        "reason": "output failed grammar/schema validation",
-                    })
+                    self.log.append(
+                        run_id,
+                        GUARDRAIL,
+                        {
+                            "action": "nudge",
+                            "kind": "grammar_retry",
+                            "rescued": False,
+                            "reason": "output failed grammar/schema validation",
+                        },
+                    )
                     continue
             break
 
-        answer = (raw.get("choices", [{}])[0].get("message", {}) or {}).get("content") or ""
+        answer = (raw.get("choices", [{}])[0].get("message", {}) or {}).get(
+            "content"
+        ) or ""
         self.log.append(run_id, RUN_COMPLETED, {"answer": answer})
         return raw
 

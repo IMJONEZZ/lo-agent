@@ -35,16 +35,16 @@ uv pip install -e .
 
 ```bash
 # Probe your server's capabilities
-harness probe --url http://localhost:8080
+lo probe --url http://localhost:8080
 
 # Run an agent task
-harness run "Use the calculator tool to compute 17*23 plus 100."
+lo run "Use the calculator tool to compute 17*23 plus 100."
 
 # Start the TUI
-harness tui
+lo tui
 
 # Start the proxy (OpenAI + Anthropic compatible)
-harness proxy --url http://localhost:8080 --port 8088
+lo proxy --url http://localhost:8080 --port 8088
 ```
 
 See the [Usage](#usage) section below for the full command reference.
@@ -64,38 +64,38 @@ See the [Usage](#usage) section below for the full command reference.
    parsing of tool calls from free text, corrective nudges with channel separation
    (format errors → user, tool errors → tool), error budgets, required-step /
    terminal-tool / prerequisite enforcement with escalating nudges, and priority-based
-   context compaction. On by default in `harness run`; tune with `--required-steps`,
+   context compaction. On by default in `lo run`; tune with `--required-steps`,
    `--terminal-tool`, `--context-budget`, or `--no-guardrails`.
-7. **Proxy mode** — the front door for any client. `harness proxy` serves both the
-   OpenAI chat-completions API and the Anthropic Messages API (`/v1/messages`, so
-   Claude Code works) in front of any upstream, applying the logit pipeline
-   (grammar skills, sampler zoo, bias profiles, think budgets, anti-slop) and
-   guardrails (rescue parsing, internal retry nudges, schema validate-and-retry)
-   transparently. Every proxied call is event-logged and `harness replay`-able.
-8. **TUI** — `harness tui` (Textual). A live runs table, a transcript view rendered
-   straight from the event log (assistant panels with reasoning, tool calls,
-   per-call seed/latency/confidence, guardrail rescues and nudges), and a task
-   launcher. The TUI is a pure read-side consumer of the log, so runs started
-   here, via `harness run` in another terminal, or through the proxy
-   (`harness tui --db proxy.db`) all stream in live. `ctrl+r` replays the
-   selected run against the server and reports whether it's bit-identical.
+7. **Proxy mode** — the front door for any client. `lo proxy` serves both the
+    OpenAI chat-completions API and the Anthropic Messages API (`/v1/messages`, so
+    Claude Code works) in front of any upstream, applying the logit pipeline
+    (grammar skills, sampler zoo, bias profiles, think budgets, anti-slop) and
+    guardrails (rescue parsing, internal retry nudges, schema validate-and-retry)
+    transparently. Every proxied call is event-logged and `lo replay`-able.
+8. **TUI** — `lo tui` (Textual). A live runs table, a transcript view rendered
+    straight from the event log (assistant panels with reasoning, tool calls,
+    per-call seed/latency/confidence, guardrail rescues and nudges), and a task
+    launcher. The TUI is a pure read-side consumer of the log, so runs started
+    here, via `lo run` in another terminal, or through the proxy
+    (`lo tui --db proxy.db`) all stream in live. `ctrl+r` replays the
+    selected run against the server and reports whether it's bit-identical.
 
 ## TUI
 
 ```bash
-uv run harness tui                  # watch + launch agent runs (harness.db)
-uv run harness tui --db proxy.db    # watch live proxy traffic
+lo tui                  # watch + launch agent runs (harness.db)
+lo tui --db proxy.db    # watch live proxy traffic
 ```
 
 Type a task in the bottom input and press Enter to launch an event-sourced
 agent run; the transcript follows it live. Agent flags (`--required-steps`,
 `--terminal-tool`, `--no-guardrails`, `--context-budget`, `--max-steps`) work
-exactly as they do for `harness run`.
+exactly as they do for `lo run`.
 
 ## Proxy
 
 ```bash
-uv run harness proxy --url http://localhost:8080 --port 8088
+lo proxy --url http://localhost:8080 --port 8088
 # then point opencode/aider/Continue at http://localhost:8088/v1
 # or Claude Code / Anthropic SDKs at http://localhost:8088 (/v1/messages)
 ```
@@ -132,24 +132,24 @@ One OpenAI-compatible client + a capability prober + thin per-server adapters
 uv sync
 
 # What can this server do? (probes seed determinism with live test requests)
-uv run harness probe --url http://localhost:8080
+lo probe --url http://localhost:8080
 
 # Run an agent task (event-sourced; every model call logged with its seed)
-uv run harness run "Use the calculator tool to compute 17*23 plus 100."
+lo run "Use the calculator tool to compute 17*23 plus 100."
 
 # List runs, resume a crashed run, or verify a run replays bit-identically
-uv run harness runs
-uv run harness resume <run-id>
-uv run harness replay <run-id>
+lo runs
+lo resume <run-id>
+lo replay <run-id>
 
 # Grammar skills: guaranteed-valid output, server-constrained where possible
-uv run harness skill list
-uv run harness skill sql_select "names of users older than 30; table users(name, age)"
+lo skill list
+lo skill sql_select "names of users older than 30; table users(name, age)"
 
 # Background cognition: summarize runs into memory, reflect on failures,
 # induce draft skills from recurring output shapes; then query memory
-uv run harness background
-uv run harness recall "sql users"
+lo background
+lo recall "sql users"
 ```
 
 Tip: start llama.cpp with `--slot-save-path /some/dir` to unlock true KV-state
@@ -176,7 +176,7 @@ src/local_harness/
 ├── native/      # Tier-4 in-process backend, activation steering, LoRA hot-swap
 ├── proxy/       # OpenAI + Anthropic API front door with pipeline + guardrails
 ├── tui/         # Textual app: live run viewer + task launcher over the event log
-└── cli/         # harness probe|run|resume|replay|runs|skill|background|recall|proxy|tui
+└── cli/         # lo probe|run|resume|replay|runs|skill|background|recall|proxy|tui
 ```
 
 ## Tests
@@ -186,5 +186,5 @@ uv run pytest
 ```
 
 Unit tests run against mock servers (no GPU needed). Live verification against a
-running llama.cpp server: `harness probe`, then `run` + `replay` — replay exits 0
+running llama.cpp server: `lo probe`, then `run` + `replay` — replay exits 0
 only if the transcript hash matches.

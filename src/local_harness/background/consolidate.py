@@ -1,7 +1,7 @@
 """Memory consolidation: summarize completed runs into episodic memory.
 
 Free-tokens background cognition: runs during idle time (or via
-`harness background`), costs nothing but local watts.
+`lo background`), costs nothing but local watts.
 """
 
 from __future__ import annotations
@@ -29,14 +29,22 @@ async def consolidate(
         completed = log.events(run.run_id, type=RUN_COMPLETED)
         tools = [e.payload["name"] for e in log.events(run.run_id, type=TOOL_CALL)]
         answer = completed[-1].payload.get("answer", "") if completed else ""
-        response = await client.chat(GenerationRequest(
-            messages=[Message(role="user", content=(
-                "Summarize this completed agent task in one sentence for future recall. "
-                f"Task: {run.task}\nTools used: {tools}\nAnswer: {answer[:400]}"
-            ))],
-            sampling=SamplingParams(temperature=0.2, max_tokens=max_tokens, seed=1,
-                                     extra=dict(NO_THINK)),
-        ))
+        response = await client.chat(
+            GenerationRequest(
+                messages=[
+                    Message(
+                        role="user",
+                        content=(
+                            "Summarize this completed agent task in one sentence for future recall. "
+                            f"Task: {run.task}\nTools used: {tools}\nAnswer: {answer[:400]}"
+                        ),
+                    )
+                ],
+                sampling=SamplingParams(
+                    temperature=0.2, max_tokens=max_tokens, seed=1, extra=dict(NO_THINK)
+                ),
+            )
+        )
         summary = response.text.strip()
         if summary:
             memory.store("episode", summary, run_id=run.run_id)

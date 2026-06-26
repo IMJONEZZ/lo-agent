@@ -34,44 +34,80 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import (
-    Collapsible, DataTable, Footer, Input, Label, OptionList, RichLog, Static,
+    Collapsible,
+    DataTable,
+    Footer,
+    Input,
+    Label,
+    OptionList,
+    RichLog,
+    Static,
 )
 from textual.widgets.option_list import Option
 
 from ..agent.loop import Agent
 from ..agent.tools import ToolRegistry, builtin_tools
 from ..events.log import (
-    AGENT_SPAWNED, CONTEXT_COMPACTED, MESSAGE_SNIPPED, MODEL_CALL, POLICY_TRIGGERED,
-    RUN_COMPLETED, RUN_FAILED, TOOL_CALL, USER_MESSAGE, EventLog,
+    AGENT_SPAWNED,
+    CONTEXT_COMPACTED,
+    MESSAGE_SNIPPED,
+    MODEL_CALL,
+    POLICY_TRIGGERED,
+    RUN_COMPLETED,
+    RUN_FAILED,
+    TOOL_CALL,
+    USER_MESSAGE,
+    EventLog,
 )
 from ..events.replay import replay_run
 from ..inference.capabilities import Capabilities, probe
 from ..inference.client import OpenAICompatClient
 from . import render
+
 # Color constants (render.C_OK, render.C_DIM, …) are read as `render.C_*` so a /theme switch,
 # which calls render.set_palette(), recolors app-side chrome too (live area,
 # menus, modals) — not just the transcript. Don't import them by value here.
 from .render import (
-    ability_glyphs, banner_body, chat_render_event, frontier_saved,
-    status_bar, status_text, tokens_of, usage_panel, welcome_panel,
+    ability_glyphs,
+    banner_body,
+    chat_render_event,
+    frontier_saved,
+    status_bar,
+    status_text,
+    tokens_of,
+    usage_panel,
+    welcome_panel,
 )
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
 
 def _theme_from_palette(p: render.Palette) -> Theme:
     """Build a Textual Theme (the chrome: bg/surface/panel/accent) from a render
     Palette, so the chrome and the transcript hues stay one coherent skin."""
     return Theme(
-        name=p.name, primary=p.jade, secondary=p.sakura, accent=p.gold,
-        foreground=p.cream, background=p.bg, surface=p.surface, panel=p.panel,
-        success=p.jade, warning=p.gold, error=p.rose, dark=p.dark,
+        name=p.name,
+        primary=p.jade,
+        secondary=p.sakura,
+        accent=p.gold,
+        foreground=p.cream,
+        background=p.bg,
+        surface=p.surface,
+        panel=p.panel,
+        success=p.jade,
+        warning=p.gold,
+        error=p.rose,
+        dark=p.dark,
         variables={
             "border": p.jade_deep,
-            "block-cursor-background": p.jade, "block-cursor-foreground": p.ink,
+            "block-cursor-background": p.jade,
+            "block-cursor-foreground": p.ink,
             "input-cursor-background": p.jade,
             "input-selection-background": p.jade_deep + " 35%",
-            "footer-key-foreground": p.gold, "footer-description-foreground": p.cream,
-            "scrollbar": p.jade_deep, "scrollbar-hover": p.jade,
+            "footer-key-foreground": p.gold,
+            "footer-description-foreground": p.cream,
+            "scrollbar": p.jade_deep,
+            "scrollbar-hover": p.jade,
         },
     )
 
@@ -95,8 +131,12 @@ def _findings_skill(kind: str):
     """A grammar skill that constrains review output to a valid findings list:
     `<file>:<line> — <severity> — <issue>` per line, or exactly 'No findings.'."""
     from ..structured import choice, lit, one_or_more, regex, seq, zero_or_more
-    sevs = (["critical", "high", "medium", "low"] if kind == "security-review"
-            else ["blocker", "major", "minor", "nit"])
+
+    sevs = (
+        ["critical", "high", "medium", "low"]
+        if kind == "security-review"
+        else ["blocker", "major", "minor", "nit"]
+    )
     path = one_or_more(regex(r"[^\s:]"))
     num = one_or_more(regex(r"[0-9]"))
     desc = one_or_more(regex(r"[^\n]"))
@@ -109,12 +149,17 @@ def _findings_skill(kind: str):
 # (steered by a system-prompt suffix) and whether low-confidence steps are
 # resampled (a StepPolicy threshold; None = off). /fast == low.
 _EFFORT = {
-    "low": {"resample": None, "blurb": "brief thinking, single pass",
-            "think": "Keep your reasoning brief and reach the answer quickly."},
-    "medium": {"resample": None, "blurb": "balanced (the default)",
-               "think": ""},
-    "high": {"resample": -1.0, "blurb": "think thoroughly, resample unsure steps",
-             "think": "Think carefully and thoroughly, and double-check before you answer."},
+    "low": {
+        "resample": None,
+        "blurb": "brief thinking, single pass",
+        "think": "Keep your reasoning brief and reach the answer quickly.",
+    },
+    "medium": {"resample": None, "blurb": "balanced (the default)", "think": ""},
+    "high": {
+        "resample": -1.0,
+        "blurb": "think thoroughly, resample unsure steps",
+        "think": "Think carefully and thoroughly, and double-check before you answer.",
+    },
 }
 
 
@@ -125,13 +170,23 @@ _PLAN_INSTRUCTION = (
     "Produce a detailed, step-by-step implementation plan for the task below. "
     "Think it through carefully, but DO NOT implement anything yet — output only "
     "the plan as Markdown: numbered steps, files to create/modify, and the key "
-    "decisions and trade-offs.\n\nTask: ")
+    "decisions and trade-offs.\n\nTask: "
+)
 
 # Live advantage demos surfaced as slash-commands (see tui/advantages.py). Kept as a
 # literal so dispatch needs no import; the worker imports the implementations lazily.
 _ADVANTAGE_NAMES = frozenset(
-    {"grammar", "samplers", "antislop", "overlay", "consistency", "escalate",
-     "bestof", "thinkbudget"})
+    {
+        "grammar",
+        "samplers",
+        "antislop",
+        "overlay",
+        "consistency",
+        "escalate",
+        "bestof",
+        "thinkbudget",
+    }
+)
 
 
 def _caps_from_health(health: dict) -> Capabilities | None:
@@ -157,19 +212,37 @@ class ConnectScreen(ModalScreen[tuple[str, str, str] | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="connectbox"):
             yield Label("Connect to a provider", id="connecttitle")
-            yield Input(value=self._url, placeholder="base URL (e.g. https://api.openai.com)", id="c_url")
-            yield Input(value=self._model, placeholder="model — leave blank to pick from the server's list", id="c_model")
-            yield Input(placeholder="API key — optional (for hosted providers)", password=True, id="c_key")
-            yield Label("Enter to connect (then pick a model) · Esc to cancel", id="connecthint")
+            yield Input(
+                value=self._url,
+                placeholder="base URL (e.g. https://api.openai.com)",
+                id="c_url",
+            )
+            yield Input(
+                value=self._model,
+                placeholder="model — leave blank to pick from the server's list",
+                id="c_model",
+            )
+            yield Input(
+                placeholder="API key — optional (for hosted providers)",
+                password=True,
+                id="c_key",
+            )
+            yield Label(
+                "Enter to connect (then pick a model) · Esc to cancel", id="connecthint"
+            )
 
     def on_mount(self) -> None:
         self.query_one("#c_url", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()  # don't let it bubble to the app's prompt handler
-        self.dismiss((self.query_one("#c_url", Input).value.strip(),
-                      self.query_one("#c_model", Input).value.strip(),
-                      self.query_one("#c_key", Input).value.strip()))
+        self.dismiss(
+            (
+                self.query_one("#c_url", Input).value.strip(),
+                self.query_one("#c_model", Input).value.strip(),
+                self.query_one("#c_key", Input).value.strip(),
+            )
+        )
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -187,13 +260,17 @@ class ModelPickerScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         from textual.widgets import OptionList
+
         with Vertical(id="pickbox"):
-            yield Label(f"{len(self._models)} models available — choose one", id="picktitle")
+            yield Label(
+                f"{len(self._models)} models available — choose one", id="picktitle"
+            )
             yield OptionList(*self._models, id="modellist")
             yield Label("↑↓ choose · enter select · esc cancel", id="pickhint")
 
     def on_mount(self) -> None:
         from textual.widgets import OptionList
+
         self.query_one(OptionList).focus()
 
     def on_option_list_option_selected(self, event) -> None:
@@ -206,8 +283,11 @@ class ModelPickerScreen(ModalScreen[str | None]):
 class PermissionModal(ModalScreen[bool]):
     """Approve or deny a tool call (the 'ask' tier of the permission system)."""
 
-    BINDINGS = [("y", "approve", "Allow"), ("n", "reject", "Deny"),
-                ("escape", "reject", "Deny")]
+    BINDINGS = [
+        ("y", "approve", "Allow"),
+        ("n", "reject", "Deny"),
+        ("escape", "reject", "Deny"),
+    ]
 
     def __init__(self, tool: str, args: str) -> None:
         super().__init__()
@@ -230,9 +310,14 @@ class OverlayScreen(ModalScreen[None]):
     """A scrollable modal for a Rich renderable (usage panel, help, etc.) — so long
     content scrolls instead of running off the top like a chat-log write would."""
 
-    BINDINGS = [("escape", "close", "Close"), ("q", "close", "Close"),
-                ("up", "scroll_up", ""), ("down", "scroll_down", ""),
-                ("pageup", "page_up", ""), ("pagedown", "page_down", "")]
+    BINDINGS = [
+        ("escape", "close", "Close"),
+        ("q", "close", "Close"),
+        ("up", "scroll_up", ""),
+        ("down", "scroll_down", ""),
+        ("pageup", "page_up", ""),
+        ("pagedown", "page_down", ""),
+    ]
 
     def __init__(self, renderable, hint: str = "↑↓ scroll · esc to close") -> None:
         super().__init__()
@@ -276,19 +361,31 @@ class RewindScreen(ModalScreen[int | None]):
 
     def compose(self) -> ComposeResult:
         from textual.widgets import OptionList
+
         with Vertical(id="rewindbox"):
-            yield Label("Rewind — remove from the chosen point onward (tail archived)",
-                        id="rewindtitle")
+            yield Label(
+                "Rewind — remove from the chosen point onward (tail archived)",
+                id="rewindtitle",
+            )
             yield OptionList(id="rewindlist")
             yield Label("↑↓ choose · enter rewind · esc cancel", id="rewindhint")
 
     def on_mount(self) -> None:
         from textual.widgets import OptionList
+
         ol = self.query_one(OptionList)
         for seq, kind, preview in self._points:
-            label = "the original answer" if kind == "answer" else f"follow-up: {preview}"
-            ol.add_option(Option(
-                Text.assemble(("✂ ", "bold " + render.C_RESAMPLE), (label, render.C_ANSWER)), id=str(seq)))
+            label = (
+                "the original answer" if kind == "answer" else f"follow-up: {preview}"
+            )
+            ol.add_option(
+                Option(
+                    Text.assemble(
+                        ("✂ ", "bold " + render.C_RESAMPLE), (label, render.C_ANSWER)
+                    ),
+                    id=str(seq),
+                )
+            )
         if self._points:
             ol.highlighted = len(self._points) - 1  # default to the most recent point
         ol.focus()
@@ -326,18 +423,29 @@ class SnipScreen(ModalScreen[int | None]):
 
     def compose(self) -> ComposeResult:
         from textual.widgets import OptionList
+
         with Vertical(id="snipbox"):
-            yield Label("Snip — collapse a turn to free context (lossless)", id="sniptitle")
+            yield Label(
+                "Snip — collapse a turn to free context (lossless)", id="sniptitle"
+            )
             yield OptionList(id="sniplist")
             yield Label("↑↓ choose · enter snip · esc cancel", id="sniphint")
 
     def on_mount(self) -> None:
         from textual.widgets import OptionList
+
         ol = self.query_one(OptionList)
         for seq, label, size in self._points:
-            ol.add_option(Option(
-                Text.assemble(("✂ ", "bold " + render.C_RESAMPLE), (label, render.C_ANSWER),
-                              (f"  (~{render._ktok(size // 4)} tok)", render.C_DIM)), id=str(seq)))
+            ol.add_option(
+                Option(
+                    Text.assemble(
+                        ("✂ ", "bold " + render.C_RESAMPLE),
+                        (label, render.C_ANSWER),
+                        (f"  (~{render._ktok(size // 4)} tok)", render.C_DIM),
+                    ),
+                    id=str(seq),
+                )
+            )
         if self._points:
             ol.highlighted = 0
         ol.focus()
@@ -362,6 +470,7 @@ class ThemePickerScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         from textual.widgets import OptionList
+
         with Vertical(id="themebox"):
             yield Label("Theme — ↑↓ to preview, enter to keep", id="themetitle")
             yield OptionList(id="themelist")
@@ -369,6 +478,7 @@ class ThemePickerScreen(ModalScreen[str | None]):
 
     def on_mount(self) -> None:
         from textual.widgets import OptionList
+
         ol = self.query_one(OptionList)
         for i, name in enumerate(self._names):
             mark = "▸ " if name == self._current else "  "
@@ -480,6 +590,7 @@ class HarnessApp(App):
     ):
         super().__init__()
         from ..agent.presets import get_preset
+
         # When set, this TUI is a thin CLIENT of a `harness serve` instance: it
         # POSTs sessions to the server and renders the SSE event stream, instead
         # of building and driving an Agent in-process. The default (None) is the
@@ -515,27 +626,37 @@ class HarnessApp(App):
         self.active: str | None = None
         self._caps_ready = asyncio.Event()
         self._follow = True
-        self._blank = False                  # /new or /clear: hold a blank slate
+        self._blank = False  # /new or /clear: hold a blank slate
         self._rendered = 0
         self._runs_state: list[tuple] = []
         self._run_ids: list[str] = []
         self._status_base: str | None = None
         self._spin = 0
         self._welcomed = False
-        self._live_content = ""              # in-progress streamed answer
-        self._live_reasoning = ""            # in-progress streamed thinking
-        self._live_ghost = ""                # a resampled (rejected) attempt, ghosted
-        self._live_streams: list[dict] | None = None   # N concurrent rollouts (fan-out view)
+        self._live_content = ""  # in-progress streamed answer
+        self._live_reasoning = ""  # in-progress streamed thinking
+        self._live_ghost = ""  # a resampled (rejected) attempt, ghosted
+        self._live_streams: list[dict] | None = (
+            None  # N concurrent rollouts (fan-out view)
+        )
         self._live_fan_title = ""
         self._streaming = False
-        self._running_tool: str | None = None   # a tool currently executing (live indicator)
+        self._running_tool: str | None = (
+            None  # a tool currently executing (live indicator)
+        )
         # persistent status-bar / usage state (the ability surface)
         self._stats_dirty = True
-        self._stats = {"calls": 0, "tokens": 0, "saved": 0.0,
-                       "conf": [0, 0, 0], "mean_lp": None, "resamples": 0}
+        self._stats = {
+            "calls": 0,
+            "tokens": 0,
+            "saved": 0.0,
+            "conf": [0, 0, 0],
+            "mean_lp": None,
+            "resamples": 0,
+        }
         self._learn_summary: str | None = None
         self._banner_built = False
-        self._show_thinking = True            # ^y toggles full reasoning in the transcript
+        self._show_thinking = True  # ^y toggles full reasoning in the transcript
         self._banner_collapsed_once = False
         # plan-mode flow: a produced plan is written to a temp file, presented as an
         # artifact, and can be /editor-edited, refined by chatting, or /approve-d
@@ -544,18 +665,30 @@ class HarnessApp(App):
         self._plan_file: str | None = None
         self._expect_plan = False
         # /context gauge + proactive warnings (computed from the latest MODEL_CALL).
-        self._ctx: tuple[str, float | None] | None = None  # (label, frac) for the status bar
-        self._ctx_warn_level = 0  # highest % threshold warned (70, 80); reset on compaction
-        self._effort = "medium"   # /effort | /fast — reasoning depth + resample aggressiveness
+        self._ctx: tuple[str, float | None] | None = (
+            None  # (label, frac) for the status bar
+        )
+        self._ctx_warn_level = (
+            0  # highest % threshold warned (70, 80); reset on compaction
+        )
+        self._effort = (
+            "medium"  # /effort | /fast — reasoning depth + resample aggressiveness
+        )
         self._vim_enabled = False  # /vim — modal editing on the prompt
         self._vim_mode = "insert"  # insert | normal
-        self._vim_pending = ""     # for two-key ops like dd
-        self._last_quit = 0.0      # ^C-twice-to-exit timestamp
-        self._active_worker = None  # the in-flight run worker (for /stop · Esc interrupt)
-        self._code_mode = True     # /codemode — model writes code calling tools (default on)
+        self._vim_pending = ""  # for two-key ops like dd
+        self._last_quit = 0.0  # ^C-twice-to-exit timestamp
+        self._active_worker = (
+            None  # the in-flight run worker (for /stop · Esc interrupt)
+        )
+        self._code_mode = (
+            True  # /codemode — model writes code calling tools (default on)
+        )
 
     def compose(self) -> ComposeResult:
-        with Collapsible(title="local_harness  ·  connecting…", id="banner", collapsed=False):
+        with Collapsible(
+            title="local_harness  ·  connecting…", id="banner", collapsed=False
+        ):
             yield Static("probing the server…", id="banner_body")
         with Horizontal(id="main"):
             yield DataTable(id="runs")
@@ -563,7 +696,10 @@ class HarnessApp(App):
         yield Static(id="live")
         yield Static(id="statusbar")
         yield OptionList(id="slashmenu")
-        yield PromptInput(placeholder="Ask the harness  ·  /help for commands  ·  ^u usage  ·  ^o connect", id="prompt")
+        yield PromptInput(
+            placeholder="Ask the harness  ·  /help for commands  ·  ^u usage  ·  ^o connect",
+            id="prompt",
+        )
         yield Footer()
 
     def on_mount(self) -> None:
@@ -595,27 +731,85 @@ class HarnessApp(App):
 
     def get_system_commands(self, screen):  # adds to the ^p command palette
         yield from super().get_system_commands(screen)
-        yield SystemCommand("Connect to provider…", "Switch URL / model / API key", self.action_connect)
-        yield SystemCommand("New conversation", "Clear the screen and start fresh", self.action_new)
-        yield SystemCommand("Usage & advantages", "Cost saved, determinism, confidence", self.action_usage)
-        yield SystemCommand("Context window", "What's in context and how full (/context)", self.action_context)
-        yield SystemCommand("Memory", "USER / MEMORY / PROJECT notes + recall (/memory)", self.action_memory)
-        yield SystemCommand("Code review", "Review the git diff (read-only)", lambda: self.action_review("review"))
-        yield SystemCommand("Security review", "Security-review the git diff", lambda: self.action_review("security-review"))
-        yield SystemCommand("Rewind", "Roll back to an earlier point (tail archived)", self.action_rewind)
-        yield SystemCommand("Snip", "Collapse a turn to free context (lossless)", self.action_snip)
-        yield SystemCommand("Theme", "Switch theme (live preview, remembered)", self.action_theme)
-        yield SystemCommand("Cost", "What this session would cost on a frontier API", self.action_cost)
-        yield SystemCommand("Export transcript", "Write run-<id>.md to the cwd", self._export_transcript)
-        yield SystemCommand("Switch model", "Pick a model the endpoint serves", self.action_model)
-        yield SystemCommand("Agents (team)", "Lead + spawned workers (/agents)", self.action_agents)
-        yield SystemCommand("Tool sources (MCP)", "Show configured MCP/UTCP sources", self.action_mcp)
-        yield SystemCommand("Vim mode", "Toggle modal editing on the prompt", self.action_vim)
-        yield SystemCommand("Plan-fork", "Fork N candidate plans, pick the best", self.action_plan_fork)
-        yield SystemCommand("Editor", "Edit the plan / transcript in $EDITOR", self._editor_command)
-        yield SystemCommand("Approve plan", "Switch to build mode and implement the plan", self._approve_plan)
-        yield SystemCommand("Run last code block", "Execute it and show the output", self._run_last_code)
-        yield SystemCommand("Preview HTML", "Open the last HTML block in the browser", self._preview_last)
+        yield SystemCommand(
+            "Connect to provider…", "Switch URL / model / API key", self.action_connect
+        )
+        yield SystemCommand(
+            "New conversation", "Clear the screen and start fresh", self.action_new
+        )
+        yield SystemCommand(
+            "Usage & advantages",
+            "Cost saved, determinism, confidence",
+            self.action_usage,
+        )
+        yield SystemCommand(
+            "Context window",
+            "What's in context and how full (/context)",
+            self.action_context,
+        )
+        yield SystemCommand(
+            "Memory",
+            "USER / MEMORY / PROJECT notes + recall (/memory)",
+            self.action_memory,
+        )
+        yield SystemCommand(
+            "Code review",
+            "Review the git diff (read-only)",
+            lambda: self.action_review("review"),
+        )
+        yield SystemCommand(
+            "Security review",
+            "Security-review the git diff",
+            lambda: self.action_review("security-review"),
+        )
+        yield SystemCommand(
+            "Rewind",
+            "Roll back to an earlier point (tail archived)",
+            self.action_rewind,
+        )
+        yield SystemCommand(
+            "Snip", "Collapse a turn to free context (lossless)", self.action_snip
+        )
+        yield SystemCommand(
+            "Theme", "Switch theme (live preview, remembered)", self.action_theme
+        )
+        yield SystemCommand(
+            "Cost", "What this session would cost on a frontier API", self.action_cost
+        )
+        yield SystemCommand(
+            "Export transcript", "Write run-<id>.md to the cwd", self._export_transcript
+        )
+        yield SystemCommand(
+            "Switch model", "Pick a model the endpoint serves", self.action_model
+        )
+        yield SystemCommand(
+            "Agents (team)", "Lead + spawned workers (/agents)", self.action_agents
+        )
+        yield SystemCommand(
+            "Tool sources (MCP)", "Show configured MCP/UTCP sources", self.action_mcp
+        )
+        yield SystemCommand(
+            "Vim mode", "Toggle modal editing on the prompt", self.action_vim
+        )
+        yield SystemCommand(
+            "Plan-fork", "Fork N candidate plans, pick the best", self.action_plan_fork
+        )
+        yield SystemCommand(
+            "Editor", "Edit the plan / transcript in $EDITOR", self._editor_command
+        )
+        yield SystemCommand(
+            "Approve plan",
+            "Switch to build mode and implement the plan",
+            self._approve_plan,
+        )
+        yield SystemCommand(
+            "Run last code block", "Execute it and show the output", self._run_last_code
+        )
+        yield SystemCommand(
+            "Preview HTML",
+            "Open the last HTML block in the browser",
+            self._preview_last,
+        )
 
     # --- workers ---------------------------------------------------------
 
@@ -627,6 +821,7 @@ class HarnessApp(App):
             from ..integrations.load import registry_with_sources
             import os as _os
             from ..sandbox import make_sandbox, SandboxUnavailable
+
             try:
                 self._sandbox = make_sandbox(self._sandbox_kind, _os.getcwd())
             except SandboxUnavailable as e:
@@ -635,17 +830,24 @@ class HarnessApp(App):
                 self.sub_title = f"sandbox unavailable — {e}"
                 return
             if self._sandbox is not None and self._sandbox.kind != "host":
-                self.notify(f"tools run inside a {self._sandbox.kind} sandbox "
-                            "(workdir mounted, host isolated)", timeout=8)
+                self.notify(
+                    f"tools run inside a {self._sandbox.kind} sandbox "
+                    "(workdir mounted, host isolated)",
+                    timeout=8,
+                )
             self._tool_registry = await registry_with_sources(
-                self.tools_config, sandbox=self._sandbox)
+                self.tools_config, sandbox=self._sandbox
+            )
             # self-editing memory: the notebook + memory/session_search tools
             from ..agent.memory import Memory
             from ..agent.notebook import Notebook, memory_tool, session_search_tool
             from pathlib import Path
+
             Path(self.memory_dir).mkdir(parents=True, exist_ok=True)
             # PROJECT.md lives in the cwd's .harness/, so it travels with the codebase.
-            self.notebook = Notebook(self.memory_dir, project_dir=str(Path.cwd() / ".harness"))
+            self.notebook = Notebook(
+                self.memory_dir, project_dir=str(Path.cwd() / ".harness")
+            )
             self._memory = Memory(Path(self.memory_dir) / "memory.db")
             self._tool_registry.register(memory_tool(self.notebook))
             self._tool_registry.register(session_search_tool(self._memory))
@@ -657,22 +859,34 @@ class HarnessApp(App):
                 models = await self.client.list_models()
                 self.client.model = models[0] if models else ""
                 if len(models) > 1:
-                    self.notify(f"{len(models)} models here — using {self.client.model}; "
-                                "^o to pick another", timeout=8)
+                    self.notify(
+                        f"{len(models)} models here — using {self.client.model}; "
+                        "^o to pick another",
+                        timeout=8,
+                    )
             self.caps = await probe(self.client)
         except Exception as e:
             self.sub_title = f"upstream error: {e}"
-            self._set_banner_title(f"local_harness  ·  can't reach {self.client.base_url} — ^o to connect")
-            self.notify(f"can't reach {self.client.base_url}: {e}", severity="error", timeout=10)
-            if auto_connect_on_fail:  # surface the connect modal so the default isn't a dead end
+            self._set_banner_title(
+                f"local_harness  ·  can't reach {self.client.base_url} — ^o to connect"
+            )
+            self.notify(
+                f"can't reach {self.client.base_url}: {e}", severity="error", timeout=10
+            )
+            if (
+                auto_connect_on_fail
+            ):  # surface the connect modal so the default isn't a dead end
                 self.action_connect()
             return
         self._status_base = f"{self.client.model} · tier {self.caps.tier()}"
         self.sub_title = self._status_base
         if self.caps.logprobs and not self.caps.stream_logprobs:
             # front the quirk honestly rather than hide the re-pass
-            self.notify("This engine can't stream confidence alongside tool-calling — "
-                        "it's filled in from a deterministic re-pass.", timeout=8)
+            self.notify(
+                "This engine can't stream confidence alongside tool-calling — "
+                "it's filled in from a deterministic re-pass.",
+                timeout=8,
+            )
         self._refresh_banner()
         self._update_status()
         self._maybe_welcome()
@@ -686,6 +900,7 @@ class HarnessApp(App):
         The server's own upstream probe may still be running (≈30s on a 27B), so
         poll /health until capabilities land before declaring ready."""
         import httpx
+
         health = None
         try:
             async with httpx.AsyncClient(timeout=10) as c:
@@ -699,12 +914,18 @@ class HarnessApp(App):
         except Exception as e:
             self.sub_title = f"can't reach server {self.server}: {e}"
             self._set_banner_title(f"local_harness  ·  can't reach {self.server}")
-            self.notify(f"can't reach harness serve at {self.server}: {e}",
-                        severity="error", timeout=10)
+            self.notify(
+                f"can't reach harness serve at {self.server}: {e}",
+                severity="error",
+                timeout=10,
+            )
             return
         if not health.get("capabilities"):
-            self.notify(f"server reached but upstream unavailable: {health.get('error')}",
-                        severity="warning", timeout=10)
+            self.notify(
+                f"server reached but upstream unavailable: {health.get('error')}",
+                severity="warning",
+                timeout=10,
+            )
         self.caps = _caps_from_health(health)
         model = health.get("model", "?")
         tier = self.caps.tier() if self.caps else "?"
@@ -719,18 +940,26 @@ class HarnessApp(App):
     async def _server_submit(self, text: str) -> None:
         """Start or continue a session on the server, then follow its stream."""
         import httpx
+
         preset = self._preset.name  # let the server build the agent for this preset
         cm = self._code_mode
         try:
             async with httpx.AsyncClient(timeout=30) as c:
-                if (self.active and not self._blank
-                        and self._active_status() in ("completed", "failed")):
-                    await c.post(f"{self.server}/session/{self.active}/message",
-                                 json={"content": text, "preset": preset, "code_mode": cm})
+                if (
+                    self.active
+                    and not self._blank
+                    and self._active_status() in ("completed", "failed")
+                ):
+                    await c.post(
+                        f"{self.server}/session/{self.active}/message",
+                        json={"content": text, "preset": preset, "code_mode": cm},
+                    )
                     run_id = self.active
                 else:
-                    r = await c.post(f"{self.server}/session",
-                                     json={"task": text, "preset": preset, "code_mode": cm})
+                    r = await c.post(
+                        f"{self.server}/session",
+                        json={"task": text, "preset": preset, "code_mode": cm},
+                    )
                     r.raise_for_status()
                     run_id = r.json()["run_id"]
                     if not self._shared_db:  # remote: seed the local mirror's run row
@@ -748,6 +977,7 @@ class HarnessApp(App):
         local log (so _tick/_render_pending render them) and feed ephemeral token /
         tool deltas into the same live-render hooks the in-process path uses."""
         import httpx
+
         url = f"{self.server}/session/{run_id}/events?replay=1&once=1"
         try:
             async with httpx.AsyncClient(timeout=None) as c:
@@ -759,7 +989,9 @@ class HarnessApp(App):
                             etype = line.split(":", 1)[1].strip()
                         elif line.startswith("data:"):
                             data = json.loads(line[5:].strip())
-                            self._ingest_server_event(run_id, etype, data.get("payload", {}))
+                            self._ingest_server_event(
+                                run_id, etype, data.get("payload", {})
+                            )
         except Exception as e:
             self.notify(f"stream ended: {e}", severity="warning")
 
@@ -792,18 +1024,23 @@ class HarnessApp(App):
         """Show the permission modal for a server-side ask-tier tool, then POST the
         decision back so the server's approver resumes (or denies)."""
         import httpx
+
         request_id = payload.get("request_id", "")
         approved = await self.push_screen_wait(
-            PermissionModal(payload.get("tool", ""), payload.get("arguments", "")))
+            PermissionModal(payload.get("tool", ""), payload.get("arguments", ""))
+        )
         try:
             async with httpx.AsyncClient(timeout=15) as c:
-                await c.post(f"{self.server}/session/{run_id}/permission",
-                             json={"request_id": request_id, "approved": bool(approved)})
+                await c.post(
+                    f"{self.server}/session/{run_id}/permission",
+                    json={"request_id": request_id, "approved": bool(approved)},
+                )
         except Exception as e:  # noqa: BLE001
             self.notify(f"permission post failed: {e}", severity="error")
 
     def _set_banner_title(self, title: str) -> None:
         from textual.css.query import NoMatches
+
         try:
             self.query_one("#banner", Collapsible).title = title
         except NoMatches:
@@ -814,20 +1051,31 @@ class HarnessApp(App):
         if self.caps is None:
             return
         from textual.css.query import NoMatches
-        tools = [s["function"]["name"] for s in (self._tool_registry.schemas()
-                 if self._tool_registry else [])]
+
+        tools = [
+            s["function"]["name"]
+            for s in (self._tool_registry.schemas() if self._tool_registry else [])
+        ]
         skills = sorted(self._skill_names())
         mem = self._memory_summary()
         try:
-            self.query_one("#banner_body", Static).update(banner_body(
-                self.client.model, self.caps, tools=tools, skills=skills,
-                memory_summary=mem, preset_name=self._preset.name,
-                preset_blurb=_preset_blurb(self._preset.name)))
+            self.query_one("#banner_body", Static).update(
+                banner_body(
+                    self.client.model,
+                    self.caps,
+                    tools=tools,
+                    skills=skills,
+                    memory_summary=mem,
+                    preset_name=self._preset.name,
+                    preset_blurb=_preset_blurb(self._preset.name),
+                )
+            )
         except NoMatches:
             pass
         self._set_banner_title(
             f"local_harness  ·  {self.client.model}  ·  tier {self.caps.tier()}  ·  "
-            f"{self._preset.name}  ·  $0.00")
+            f"{self._preset.name}  ·  $0.00"
+        )
         self._banner_built = True
 
     def _memory_summary(self) -> str:
@@ -835,7 +1083,9 @@ class HarnessApp(App):
         try:
             if self.notebook is not None:
                 text = (self.notebook.memory.read() or "").strip()
-                facts = sum(1 for ln in text.splitlines() if ln.strip().startswith(("-", "*")))
+                facts = sum(
+                    1 for ln in text.splitlines() if ln.strip().startswith(("-", "*"))
+                )
                 if facts:
                     bits.append(f"{facts} notes")
         except Exception:
@@ -877,8 +1127,11 @@ class HarnessApp(App):
                 elif ev.type == POLICY_TRIGGERED:
                     resamples += 1
         self._stats = {
-            "calls": calls, "tokens": tin + tout, "saved": frontier_saved(tin, tout),
-            "conf": bands, "mean_lp": (sum(mean_lps) / len(mean_lps)) if mean_lps else None,
+            "calls": calls,
+            "tokens": tin + tout,
+            "saved": frontier_saved(tin, tout),
+            "conf": bands,
+            "mean_lp": (sum(mean_lps) / len(mean_lps)) if mean_lps else None,
             "resamples": resamples,
         }
         self._recompute_context()
@@ -909,26 +1162,38 @@ class HarnessApp(App):
             for thresh in (80, 70):  # check higher first so a jump fires only once
                 if pct >= thresh and self._ctx_warn_level < thresh:
                     self._ctx_warn_level = thresh
-                    tail = ("auto-compaction imminent (85%)" if thresh == 80
-                            else "approaching auto-compaction (85%)")
-                    self.notify(f"⚠ context {pct}% of {render._ktok(window)} — {tail}",
-                                severity="warning", timeout=8)
+                    tail = (
+                        "auto-compaction imminent (85%)"
+                        if thresh == 80
+                        else "approaching auto-compaction (85%)"
+                    )
+                    self.notify(
+                        f"⚠ context {pct}% of {render._ktok(window)} — {tail}",
+                        severity="warning",
+                        timeout=8,
+                    )
                     break
         else:
             self._ctx = (render._ktok(used), None)
 
     def _update_status(self) -> None:
         from textual.css.query import NoMatches
+
         if self.caps is None:
             return
         if self._stats_dirty:
             self._recompute_stats()
             self._stats_dirty = False
         bar = status_bar(
-            preset=self._preset.name, tier=self.caps.tier(),
-            glyphs=ability_glyphs(self.caps), saved=self._stats["saved"],
-            deterministic=self.caps.seed, learn=self._learn_state(), ctx=self._ctx,
-            vim=self._vim_mode if self._vim_enabled else None)
+            preset=self._preset.name,
+            tier=self.caps.tier(),
+            glyphs=ability_glyphs(self.caps),
+            saved=self._stats["saved"],
+            deterministic=self.caps.seed,
+            learn=self._learn_state(),
+            ctx=self._ctx,
+            vim=self._vim_mode if self._vim_enabled else None,
+        )
         try:
             self.query_one("#statusbar", Static).update(bar)
         except NoMatches:
@@ -939,7 +1204,10 @@ class HarnessApp(App):
         if self._tool_registry is None:
             return
         self._tool_registry.permissions = (
-            None if self.allow_all else self._preset.permissions(approver=self._approve_tool))
+            None
+            if self.allow_all
+            else self._preset.permissions(approver=self._approve_tool)
+        )
         if self._status_base:
             self.sub_title = f"{self._status_base} · {self._preset.name}"
         if self._banner_built:
@@ -965,11 +1233,17 @@ class HarnessApp(App):
             from ..guardrails.guardrails import Guardrails
             from ..server.coordinator import SEND_MESSAGE_NAME, SPAWN_AGENTS_NAME
 
-            names = ([s["function"]["name"] for s in tools.schemas()]
-                     + [TOOL_SEARCH_NAME, SPAWN_AGENTS_NAME, SEND_MESSAGE_NAME, RUN_CODE_NAME])
+            names = [s["function"]["name"] for s in tools.schemas()] + [
+                TOOL_SEARCH_NAME,
+                SPAWN_AGENTS_NAME,
+                SEND_MESSAGE_NAME,
+                RUN_CODE_NAME,
+            ]
             factory = lambda: Guardrails(  # noqa: E731
-                tool_names=names, required_steps=self.required_steps,
-                terminal_tools=self.terminal_tools)
+                tool_names=names,
+                required_steps=self.required_steps,
+                terminal_tools=self.terminal_tools,
+            )
         # Effort tunes resampling: low=off, else a StepPolicy threshold. An explicit
         # --resample-threshold flag overrides only at the default (medium) effort.
         eff = _EFFORT[self._effort]
@@ -979,20 +1253,32 @@ class HarnessApp(App):
         policy = None
         if threshold is not None:
             from ..signals.policies import StepPolicy
+
             policy = StepPolicy(min_mean_logprob=threshold, max_retries=1)
         # Effort also steers reasoning depth via a system-prompt suffix.
         system_prompt = preset.system_prompt
         if eff["think"]:
             system_prompt = f"{system_prompt}\n\n{eff['think']}"
         return Agent(
-            self.client, tools, EventLog(self.db_path), capabilities=self.caps,
-            system_prompt=system_prompt, sampling=preset.sampling,
-            max_steps=self.max_steps, guardrails_factory=factory, policy=policy,
-            context_budget=self.context_budget, on_token=self._on_token,
-            code_mode=self._code_mode, sandbox=self._sandbox,
-            notebook=self.notebook, exposed_tools=preset.exposed(),
-            retrieval=self._memory, on_tool=self._on_tool_event,
-            on_notice=lambda m: self.notify(m, severity="warning", timeout=8))
+            self.client,
+            tools,
+            EventLog(self.db_path),
+            capabilities=self.caps,
+            system_prompt=system_prompt,
+            sampling=preset.sampling,
+            max_steps=self.max_steps,
+            guardrails_factory=factory,
+            policy=policy,
+            context_budget=self.context_budget,
+            on_token=self._on_token,
+            code_mode=self._code_mode,
+            sandbox=self._sandbox,
+            notebook=self.notebook,
+            exposed_tools=preset.exposed(),
+            retrieval=self._memory,
+            on_tool=self._on_tool_event,
+            on_notice=lambda m: self.notify(m, severity="warning", timeout=8),
+        )
 
     async def _run_worker(self, task: str) -> None:
         await self._caps_ready.wait()
@@ -1020,7 +1306,10 @@ class HarnessApp(App):
             return
         try:
             from ..background.consolidate import consolidate
-            n = await consolidate(EventLog(self.db_path), self._memory, self.client, limit=2)
+
+            n = await consolidate(
+                EventLog(self.db_path), self._memory, self.client, limit=2
+            )
             if n:
                 self._stats_dirty = True
                 self._refresh_banner()
@@ -1029,17 +1318,26 @@ class HarnessApp(App):
 
     def _maybe_background(self) -> None:
         """After a run, while the user reads the result (idle), learn for free."""
-        if self.background_enabled and not self._cycle_running and self._memory is not None:
+        if (
+            self.background_enabled
+            and not self._cycle_running
+            and self._memory is not None
+        ):
             self.run_worker(self._background_worker(), exclusive=False)
 
     async def _background_worker(self) -> None:
         from ..background import background_cycle, summarize_cycle
         from pathlib import Path
+
         self._cycle_running = True
         try:
             counts = await background_cycle(
-                EventLog(self.db_path), self._memory, self.client,
-                Path(self.memory_dir) / "drafts", caps=self.caps)
+                EventLog(self.db_path),
+                self._memory,
+                self.client,
+                Path(self.memory_dir) / "drafts",
+                caps=self.caps,
+            )
             if any(counts.values()):
                 self._learn_summary = summarize_cycle(counts)
                 self.notify(self._learn_summary, timeout=8)
@@ -1056,11 +1354,16 @@ class HarnessApp(App):
         try:
             report = await replay_run(self.event_log, run_id, self.client)
         except Exception as e:  # noqa: BLE001 — surface the failure instead of dying silently
-            self.query_one(RichLog).write(Text(f"  ⟲ replay: failed — {e}", style="red"))
+            self.query_one(RichLog).write(
+                Text(f"  ⟲ replay: failed — {e}", style="red")
+            )
             return
         self.query_one(RichLog).write(
-            Text(f"  ⟲ replay: {report.summary()}",
-                 style="green" if report.identical else "red"))
+            Text(
+                f"  ⟲ replay: {report.summary()}",
+                style="green" if report.identical else "red",
+            )
+        )
 
     async def _reconnect(self, url: str, model: str, key: str) -> None:
         try:
@@ -1088,18 +1391,25 @@ class HarnessApp(App):
         try:
             models = await self.client.list_models()
         except Exception as e:
-            self.notify(f"couldn't list models at {self.client.base_url}: {e}",
-                        severity="error", timeout=8)
+            self.notify(
+                f"couldn't list models at {self.client.base_url}: {e}",
+                severity="error",
+                timeout=8,
+            )
             return typed  # fall back to whatever was typed (may be blank)
         if not models:
             if not typed:
-                self.notify("this endpoint lists no models — set one explicitly with ^o",
-                            severity="warning")
+                self.notify(
+                    "this endpoint lists no models — set one explicitly with ^o",
+                    severity="warning",
+                )
             return typed
         if typed and typed in models:
             return typed
         if typed:
-            self.notify(f"'{typed}' isn't served here — pick from the list", severity="warning")
+            self.notify(
+                f"'{typed}' isn't served here — pick from the list", severity="warning"
+            )
         if len(models) == 1:
             self.notify(f"auto-selected the only model: {models[0]}")
             return models[0]
@@ -1126,11 +1436,14 @@ class HarnessApp(App):
 
     def _render_live(self) -> None:
         from textual.css.query import NoMatches
+
         try:
             live = self.query_one("#live", Static)
         except NoMatches:  # mid mount/teardown — nothing to draw yet
             return
-        active_running = any(s == "running" and r == self.active for r, s, _ in self._runs_state)
+        active_running = any(
+            s == "running" and r == self.active for r, s, _ in self._runs_state
+        )
         if not (self._streaming or active_running):
             live.update("")
             return
@@ -1146,8 +1459,12 @@ class HarnessApp(App):
                 live_txt = (s["text"] or s["reason"]).replace("\n", " ").strip()
                 tail = live_txt[-64:] if live_txt else "…"
                 row = Text.assemble(
-                    (f"  {num} {mark} ", "bold " + (render.C_OK if done else render.C_RESAMPLE)),
-                    (tail, render.C_ANSWER if s["text"] else render.C_REASON))
+                    (
+                        f"  {num} {mark} ",
+                        "bold " + (render.C_OK if done else render.C_RESAMPLE),
+                    ),
+                    (tail, render.C_ANSWER if s["text"] else render.C_REASON),
+                )
                 if s["result"]:
                     row.append(f"  → {s['result']}", "bold " + render.C_GOLD)
                 rows.append(row)
@@ -1158,20 +1475,48 @@ class HarnessApp(App):
             # a stable tail of WHOLE lines — not a sliding char window (which made
             # lines look like they were being "edited into nothing" as it slid).
             tail = "\n".join(self._live_reasoning.strip().splitlines()[-6:])
-            parts.append(Text.assemble((f"  ✎ thinking {SPINNER[self._spin]}\n", "italic " + render.C_REASON),
-                                       ("  " + tail.replace("\n", "\n  "), render.C_REASON)))
+            parts.append(
+                Text.assemble(
+                    (
+                        f"  ✎ thinking {SPINNER[self._spin]}\n",
+                        "italic " + render.C_REASON,
+                    ),
+                    ("  " + tail.replace("\n", "\n  "), render.C_REASON),
+                )
+            )
         if self._live_content:
             tail = "\n".join(self._live_content.splitlines()[-12:])
-            parts.append(Text.assemble(("⏺ ", "bold " + render.C_OK),
-                                       (tail, render.C_ANSWER), ("▌", render.C_RESAMPLE)))
-        if self._running_tool:  # a tool is executing — show it so the user isn't in the dark
-            parts.append(Text.assemble((f"  ⚙ {SPINNER[self._spin]} ", render.C_TOOLMARK),
-                                       (f"running {self._running_tool}…", render.C_TOOL)))
+            parts.append(
+                Text.assemble(
+                    ("⏺ ", "bold " + render.C_OK),
+                    (tail, render.C_ANSWER),
+                    ("▌", render.C_RESAMPLE),
+                )
+            )
+        if (
+            self._running_tool
+        ):  # a tool is executing — show it so the user isn't in the dark
+            parts.append(
+                Text.assemble(
+                    (f"  ⚙ {SPINNER[self._spin]} ", render.C_TOOLMARK),
+                    (f"running {self._running_tool}…", render.C_TOOL),
+                )
+            )
         if self._live_ghost:  # the rejected attempt, struck through beneath
-            parts.append(Text.assemble(("  ", ""), (self._live_ghost[-120:], "strike " + render.C_DIM),
-                                       ("  ↻ resampled", render.C_RESAMPLE + " italic")))
+            parts.append(
+                Text.assemble(
+                    ("  ", ""),
+                    (self._live_ghost[-120:], "strike " + render.C_DIM),
+                    ("  ↻ resampled", render.C_RESAMPLE + " italic"),
+                )
+            )
         if not parts:  # working, no tokens yet — the indicator sits right here
-            parts.append(Text.assemble((SPINNER[self._spin] + " ", render.C_RESAMPLE), ("working", render.C_DIM)))
+            parts.append(
+                Text.assemble(
+                    (SPINNER[self._spin] + " ", render.C_RESAMPLE),
+                    ("working", render.C_DIM),
+                )
+            )
         live.update(Group(*parts))
 
     # --- UI events -------------------------------------------------------
@@ -1201,36 +1546,46 @@ class HarnessApp(App):
         if not self._caps_ready.is_set():
             self.notify("upstream still connecting — task starts when it's ready")
         status = self._active_status()
-        is_continue = bool(self.active) and not self._blank and status in ("completed", "failed")
+        is_continue = (
+            bool(self.active) and not self._blank and status in ("completed", "failed")
+        )
         # plan mode: mark the turn so its result is presented as an approvable plan;
         # wrap a *fresh* task with the plan instruction (a continue/refine is left raw).
         send = text
         if self._preset.name == "plan":
             self._expect_plan = True
-            self._plan_pending = False  # a refined plan is coming; supersede the old one
+            self._plan_pending = (
+                False  # a refined plan is coming; supersede the old one
+            )
             if not is_continue:
                 send = _PLAN_INSTRUCTION + text
         if self.server is not None:  # thin client: the server runs the agent
             if status == "running":
                 self.notify("still working — wait for the current turn to finish")
                 return
-            self._active_worker = self.run_worker(self._server_submit(send), exclusive=False)
+            self._active_worker = self.run_worker(
+                self._server_submit(send), exclusive=False
+            )
             return
         if is_continue:
             # continue the loaded conversation rather than starting a new one
             self._active_worker = self.run_worker(
-                self._continue_worker(self.active, send), exclusive=False)
+                self._continue_worker(self.active, send), exclusive=False
+            )
         elif status == "running":
             self.notify("still working — wait for the current turn to finish")
         else:
             self._blank = False
             self._follow = True
-            self._active_worker = self.run_worker(self._run_worker(send), exclusive=False)
+            self._active_worker = self.run_worker(
+                self._run_worker(send), exclusive=False
+            )
 
     def action_confirm_quit(self) -> None:
         """^C once arms the exit; a second ^C within 2s quits — so a stray ^C
         doesn't drop you out of a long run."""
         import time
+
         now = time.monotonic()
         if now - self._last_quit < 2.0:
             self.exit()
@@ -1251,7 +1606,9 @@ class HarnessApp(App):
                     self._active_worker.cancel()
                 except Exception:
                     pass
-            self.event_log.append(self.active, RUN_FAILED, {"error": "interrupted by user"})
+            self.event_log.append(
+                self.active, RUN_FAILED, {"error": "interrupted by user"}
+            )
         self._streaming = False
         self._live_content = self._live_reasoning = self._live_ghost = ""
         self._running_tool = None
@@ -1259,6 +1616,7 @@ class HarnessApp(App):
 
     async def _server_interrupt(self, run_id: str) -> None:
         import httpx
+
         try:
             async with httpx.AsyncClient(timeout=10) as c:
                 await c.post(f"{self.server}/session/{run_id}/interrupt")
@@ -1278,9 +1636,19 @@ class HarnessApp(App):
                 continue
             if ev.type == TOOL_CALL:
                 res = ev.payload.get("result") or ""
-                pts.append((ev.seq, f"tool {ev.payload.get('name')} → {res.strip()[:46]}", len(res)))
+                pts.append(
+                    (
+                        ev.seq,
+                        f"tool {ev.payload.get('name')} → {res.strip()[:46]}",
+                        len(res),
+                    )
+                )
             elif ev.type == MODEL_CALL:
-                msg = (ev.payload.get("response") or {}).get("choices", [{}])[0].get("message", {})
+                msg = (
+                    (ev.payload.get("response") or {})
+                    .get("choices", [{}])[0]
+                    .get("message", {})
+                )
                 c = (msg.get("content") or "").strip()
                 if c:
                     pts.append((ev.seq, f"answer: {c[:46]}", len(c)))
@@ -1304,7 +1672,10 @@ class HarnessApp(App):
                 self.query_one(RichLog).clear()
                 self._render_pending()
                 self._stats_dirty = True
-                self.notify("snipped — collapsed in future context (lossless)", timeout=5)
+                self.notify(
+                    "snipped — collapsed in future context (lossless)", timeout=5
+                )
+
         self.push_screen(SnipScreen(points), done)
 
     def action_rewind(self) -> None:
@@ -1324,6 +1695,7 @@ class HarnessApp(App):
         def done(seq: int | None) -> None:
             if seq is not None:
                 self._do_rewind(seq)
+
         self.push_screen(RewindScreen(points), done)
 
     def _do_rewind(self, from_seq: int) -> None:
@@ -1335,7 +1707,10 @@ class HarnessApp(App):
         self._render_pending()
         self._stats_dirty = True
         self._runs_state = []  # force the sidebar to pick up the new archive run
-        self.notify(f"rewound · tail archived as {archive_id[:8]} (browse it with ^t)", timeout=6)
+        self.notify(
+            f"rewound · tail archived as {archive_id[:8]} (browse it with ^t)",
+            timeout=6,
+        )
 
     def _active_status(self) -> str | None:
         return next((s for r, s, _ in self._runs_state if r == self.active), None)
@@ -1351,7 +1726,11 @@ class HarnessApp(App):
                 return (ev.payload.get("answer") or "").strip()
         for ev in reversed(events):
             if ev.type == MODEL_CALL:
-                msg = (ev.payload.get("response") or {}).get("choices", [{}])[0].get("message", {})
+                msg = (
+                    (ev.payload.get("response") or {})
+                    .get("choices", [{}])[0]
+                    .get("message", {})
+                )
                 return (msg.get("content") or "").strip()
         return ""
 
@@ -1360,6 +1739,7 @@ class HarnessApp(App):
         artifact, and offer the approve / edit / refine affordances."""
         import os
         import tempfile
+
         plan = self._final_answer(run_id)
         if not plan:
             return
@@ -1370,11 +1750,16 @@ class HarnessApp(App):
         self._plan_pending = True
         chat = self.query_one(RichLog)
         chat.write(render.plan_artifact(plan, title="plan", subtitle="plan mode"))
-        chat.write(Text.assemble(
-            ("  📋 plan ready — ", "bold " + render.C_OK),
-            ("/approve", "bold " + render.C_TOOL), (" build it  ·  ", render.C_DIM),
-            ("/editor", "bold " + render.C_TOOL), (" edit in $EDITOR  ·  ", render.C_DIM),
-            ("or just reply to refine", render.C_DIM)))
+        chat.write(
+            Text.assemble(
+                ("  📋 plan ready — ", "bold " + render.C_OK),
+                ("/approve", "bold " + render.C_TOOL),
+                (" build it  ·  ", render.C_DIM),
+                ("/editor", "bold " + render.C_TOOL),
+                (" edit in $EDITOR  ·  ", render.C_DIM),
+                ("or just reply to refine", render.C_DIM),
+            )
+        )
         if self._follow:
             chat.scroll_end(animate=False)
         self.notify(f"plan saved to {path}", timeout=6)
@@ -1395,18 +1780,21 @@ class HarnessApp(App):
         self._plan_pending = False
         self._expect_plan = False
         from ..agent.presets import get_preset
-        self._preset = get_preset("build")   # implementation needs write/shell tools
+
+        self._preset = get_preset("build")  # implementation needs write/shell tools
         self._apply_preset()
         self.notify("approved → build mode; implementing the plan")
         self._submit_turn(
             "The plan above is approved. Implement it now — create and edit the "
-            "necessary files and run whatever is needed. The plan:\n\n" + plan)
+            "necessary files and run whatever is needed. The plan:\n\n" + plan
+        )
 
     def _open_in_editor(self, path: str) -> None:
         """Hand the terminal to $EDITOR (nano by default) on `path`, then return to
         the TUI. Blocks while the editor is open — that's the point."""
         import os
         import subprocess
+
         editor = os.environ.get("EDITOR") or "nano"
         try:
             with self.suspend():
@@ -1426,7 +1814,10 @@ class HarnessApp(App):
         import os
         import tempfile
         from ..events.export import transcript_markdown
-        fd, path = tempfile.mkstemp(prefix=f"harness-convo-{self.active[:8]}-", suffix=".md")
+
+        fd, path = tempfile.mkstemp(
+            prefix=f"harness-convo-{self.active[:8]}-", suffix=".md"
+        )
         with os.fdopen(fd, "w") as f:
             f.write(transcript_markdown(self.event_log, self.active))
         return path
@@ -1437,6 +1828,7 @@ class HarnessApp(App):
             self.notify("no conversation to export")
             return
         from ..events.export import transcript_markdown
+
         path = f"run-{self.active}.md"
         try:
             with open(path, "w") as f:
@@ -1455,18 +1847,26 @@ class HarnessApp(App):
         self._recompute_stats()
         self._stats_dirty = False
         s = self._stats
-        self.query_one(RichLog).write(Text.assemble(
-            ("  $0.00 spent", "bold " + render.C_OK),
-            (f"  ·  ~{render._money(s['saved'])} the same {s['tokens']:,} tokens would cost "
-             f"on a frontier API", render.C_DIM),
-            (f"  ·  {s['calls']} call(s)", render.C_DIM)))
+        self.query_one(RichLog).write(
+            Text.assemble(
+                ("  $0.00 spent", "bold " + render.C_OK),
+                (
+                    f"  ·  ~{render._money(s['saved'])} the same {s['tokens']:,} tokens would cost "
+                    f"on a frontier API",
+                    render.C_DIM,
+                ),
+                (f"  ·  {s['calls']} call(s)", render.C_DIM),
+            )
+        )
 
     def action_model(self) -> None:
         """/model — pick a model the endpoint serves and switch to it (re-probes)."""
+
         async def _switch() -> None:
             chosen = await self._resolve_model("")
             if chosen and chosen != self.client.model:
                 await self._reconnect(self.client.base_url, chosen, "")
+
         self.run_worker(_switch(), exclusive=False)
 
     def action_effort(self, level: str) -> None:
@@ -1510,21 +1910,42 @@ class HarnessApp(App):
         self.run_worker(self._run_code_worker(lang, code), exclusive=False)
 
     _RUNNERS = {
-        "python": ["python3"], "py": ["python3"], "python3": ["python3"],
-        "bash": ["bash"], "sh": ["bash"], "shell": ["bash"], "zsh": ["bash"],
-        "javascript": ["node"], "js": ["node"], "node": ["node"], "ruby": ["ruby"],
+        "python": ["python3"],
+        "py": ["python3"],
+        "python3": ["python3"],
+        "bash": ["bash"],
+        "sh": ["bash"],
+        "shell": ["bash"],
+        "zsh": ["bash"],
+        "javascript": ["node"],
+        "js": ["node"],
+        "node": ["node"],
+        "ruby": ["ruby"],
     }
-    _RUN_EXT = {"python": ".py", "py": ".py", "python3": ".py", "javascript": ".js",
-                "js": ".js", "node": ".js", "ruby": ".rb", "bash": ".sh", "sh": ".sh"}
+    _RUN_EXT = {
+        "python": ".py",
+        "py": ".py",
+        "python3": ".py",
+        "javascript": ".js",
+        "js": ".js",
+        "node": ".js",
+        "ruby": ".rb",
+        "bash": ".sh",
+        "sh": ".sh",
+    }
 
     async def _run_code_worker(self, lang: str, code: str) -> None:
         import asyncio as aio
         import os
         import tempfile
+
         runner = self._RUNNERS.get(lang)
         if runner is None:
-            self.notify(f"/run doesn't know how to execute '{lang or 'plain'}' "
-                        f"(try python/bash/js)", severity="warning")
+            self.notify(
+                f"/run doesn't know how to execute '{lang or 'plain'}' "
+                f"(try python/bash/js)",
+                severity="warning",
+            )
             return
         suffix = self._RUN_EXT.get(lang, ".txt")
         fd, path = tempfile.mkstemp(prefix="harness-run-", suffix=suffix)
@@ -1533,7 +1954,8 @@ class HarnessApp(App):
         self.notify(f"running {lang} block… (host, 30s timeout)")
         try:
             proc = await aio.create_subprocess_exec(
-                *runner, path, stdout=aio.subprocess.PIPE, stderr=aio.subprocess.STDOUT)
+                *runner, path, stdout=aio.subprocess.PIPE, stderr=aio.subprocess.STDOUT
+            )
             try:
                 out_b, _ = await aio.wait_for(proc.communicate(), timeout=30)
                 rc = proc.returncode
@@ -1541,7 +1963,9 @@ class HarnessApp(App):
                 proc.kill()
                 out_b, rc = b"(timed out after 30s)", 1
         except FileNotFoundError:
-            self.notify(f"interpreter '{runner[0]}' not found on PATH", severity="error")
+            self.notify(
+                f"interpreter '{runner[0]}' not found on PATH", severity="error"
+            )
             return
         finally:
             try:
@@ -1551,8 +1975,13 @@ class HarnessApp(App):
         output = out_b.decode("utf-8", "replace")
         out_lang = "python" if lang in ("python", "py", "python3") else lang
         self.query_one(RichLog).write(
-            render.run_output_artifact(f"{runner[0]} <block>", output, ok=(rc == 0),
-                                       lang=out_lang if rc == 0 else "text"))
+            render.run_output_artifact(
+                f"{runner[0]} <block>",
+                output,
+                ok=(rc == 0),
+                lang=out_lang if rc == 0 else "text",
+            )
+        )
         self.query_one(RichLog).scroll_end(animate=False)
 
     def _preview_last(self) -> None:
@@ -1561,10 +1990,19 @@ class HarnessApp(App):
         import os
         import tempfile
         import webbrowser
-        html = next((c for lang, c in reversed(self._last_code_blocks())
-                     if lang in ("html", "htm")), None)
+
+        html = next(
+            (
+                c
+                for lang, c in reversed(self._last_code_blocks())
+                if lang in ("html", "htm")
+            ),
+            None,
+        )
         if html is None:  # fall back to the most recent write_file of an .html path
-            for ev in reversed(self.event_log.events(self.active) if self.active else []):
+            for ev in reversed(
+                self.event_log.events(self.active) if self.active else []
+            ):
                 if ev.type == TOOL_CALL and ev.payload.get("name") == "write_file":
                     try:
                         args = json.loads(ev.payload.get("arguments") or "{}")
@@ -1590,6 +2028,7 @@ class HarnessApp(App):
     def _skill_registry(self):
         if self._skills is None:
             from ..skills.skill import SkillRegistry
+
             self._skills = SkillRegistry(self.skills_dir)
         return self._skills
 
@@ -1600,29 +2039,41 @@ class HarnessApp(App):
             return set()
 
     _SLASH_HELP = {
-        "help": "keys & commands", "new": "reset the conversation",
-        "clear": "reset the conversation", "rewind": "roll back to an earlier point (alias /undo)",
+        "help": "keys & commands",
+        "new": "reset the conversation",
+        "clear": "reset the conversation",
+        "rewind": "roll back to an earlier point (alias /undo)",
         "undo": "roll back to an earlier point (alias of /rewind)",
         "snip": "collapse a turn to free context (lossless)",
         "stop": "interrupt the current turn (also Esc)",
-        "delete": "delete this conversation", "sessions": "browse / switch conversations",
-        "agent": "switch preset (build/plan/explore/general)", "think": "toggle thinking",
-        "usage": "cost / determinism / confidence", "replay": "verify determinism",
+        "delete": "delete this conversation",
+        "sessions": "browse / switch conversations",
+        "agent": "switch preset (build/plan/explore/general)",
+        "think": "toggle thinking",
+        "usage": "cost / determinism / confidence",
+        "replay": "verify determinism",
         "context": "what's in the context window (and how full)",
         "memory": "show memory (USER/MEMORY/PROJECT) · /memory edit <scope>",
         "review": "code-review the git diff (/review [ref])",
         "security-review": "security-review the git diff (/security-review [ref])",
-        "mcp": "show configured MCP/UTCP tool sources", "vim": "toggle vim editing on the prompt",
+        "mcp": "show configured MCP/UTCP tool sources",
+        "vim": "toggle vim editing on the prompt",
         "codemode": "toggle code-mode: model writes code calling tools (default on)",
-        "agents": "show the team tree (lead + spawned workers)", "tasks": "team tree (alias /agents)",
+        "agents": "show the team tree (lead + spawned workers)",
+        "tasks": "team tree (alias /agents)",
         "theme": "switch theme (osaka-jade · sakura · light · gruvbox · catppuccin · …)",
-        "cost": "$ saved vs a frontier API (compact)", "export": "write run-<id>.md to the cwd",
-        "model": "switch the model (picker)", "fast": "low-effort mode (brief, single pass)",
+        "cost": "$ saved vs a frontier API (compact)",
+        "export": "write run-<id>.md to the cwd",
+        "model": "switch the model (picker)",
+        "fast": "low-effort mode (brief, single pass)",
         "effort": "reasoning depth: low | medium | high",
-        "plan": "fork N candidate plans", "connect": "switch URL / model",
-        "btw": "add a steering aside", "editor": "edit the plan / transcript in $EDITOR",
+        "plan": "fork N candidate plans",
+        "connect": "switch URL / model",
+        "btw": "add a steering aside",
+        "editor": "edit the plan / transcript in $EDITOR",
         "approve": "approve the pending plan → build & implement",
-        "run": "run the last code block, show output", "preview": "open last HTML in the browser",
+        "run": "run the last code block, show output",
+        "preview": "open last HTML in the browser",
         "grammar": "live: exactly-N output by construction (frontier miscounts)",
         "samplers": "live: DRY/min_p/XTC steer the trajectory (frontier can't)",
         "antislop": "live: ban a phrase, KV-rewind & resample",
@@ -1635,7 +2086,10 @@ class HarnessApp(App):
 
     def _slash_catalog(self) -> list[tuple[str, str]]:
         cmds = list(self._SLASH_HELP.items())
-        cmds += [(n, "grammar skill — guaranteed-valid output") for n in sorted(self._skill_names())]
+        cmds += [
+            (n, "grammar skill — guaranteed-valid output")
+            for n in sorted(self._skill_names())
+        ]
         return cmds
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -1648,8 +2102,15 @@ class HarnessApp(App):
             menu.clear_options()
             matches = [(n, d) for n, d in self._slash_catalog() if n.startswith(prefix)]
             for name, desc in matches:
-                menu.add_option(Option(
-                    Text.assemble((f"/{name}", "bold " + render.C_OK), (f"   {desc}", render.C_DIM)), id=name))
+                menu.add_option(
+                    Option(
+                        Text.assemble(
+                            (f"/{name}", "bold " + render.C_OK),
+                            (f"   {desc}", render.C_DIM),
+                        ),
+                        id=name,
+                    )
+                )
             menu.set_class(bool(matches), "visible")
             if matches:
                 menu.highlighted = 0
@@ -1670,13 +2131,21 @@ class HarnessApp(App):
         menu = self.query_one("#slashmenu", OptionList)
         if menu.has_class("visible"):
             if event.key == "down":
-                menu.action_cursor_down(); event.prevent_default(); event.stop()
+                menu.action_cursor_down()
+                event.prevent_default()
+                event.stop()
             elif event.key == "up":
-                menu.action_cursor_up(); event.prevent_default(); event.stop()
+                menu.action_cursor_up()
+                event.prevent_default()
+                event.stop()
             elif event.key in ("tab", "right"):
-                self._accept_slash(); event.prevent_default(); event.stop()
+                self._accept_slash()
+                event.prevent_default()
+                event.stop()
             elif event.key == "escape":
-                menu.set_class(False, "visible"); event.prevent_default(); event.stop()
+                menu.set_class(False, "visible")
+                event.prevent_default()
+                event.stop()
             return
 
     # --- vim mode on the prompt ------------------------------------------
@@ -1728,11 +2197,14 @@ class HarnessApp(App):
         if ch == "i":
             self._vim_set_mode("insert")
         elif ch == "a":
-            box.cursor_position = min(len(v), p + 1); self._vim_set_mode("insert")
+            box.cursor_position = min(len(v), p + 1)
+            self._vim_set_mode("insert")
         elif ch == "A":
-            box.cursor_position = len(v); self._vim_set_mode("insert")
+            box.cursor_position = len(v)
+            self._vim_set_mode("insert")
         elif ch == "I":
-            box.cursor_position = 0; self._vim_set_mode("insert")
+            box.cursor_position = 0
+            self._vim_set_mode("insert")
         elif ch == "h" or event.key == "left":
             box.cursor_position = max(0, p - 1)
         elif ch == "l" or event.key == "right":
@@ -1746,7 +2218,7 @@ class HarnessApp(App):
         elif ch == "b":
             box.cursor_position = self._vim_word(v, p, -1)
         elif ch == "x" and p < len(v):
-            box.value = v[:p] + v[p + 1:]
+            box.value = v[:p] + v[p + 1 :]
             box.cursor_position = min(p, max(0, len(box.value) - 1))
         elif ch == "D":
             box.value = v[:p]
@@ -1758,11 +2230,18 @@ class HarnessApp(App):
         """/codemode [on|off] — toggle code-mode (model writes Python calling tools
         in one round-trip) vs classic per-tool calling. Default on."""
         arg = (arg or "").strip().lower()
-        self._code_mode = (arg != "off") if arg in ("on", "off") else (not self._code_mode)
-        where = ("microVM-isolated" if getattr(self._sandbox, "kind", "host") == "microvm"
-                 else "in-process")
-        self.notify(f"code-mode {'on' if self._code_mode else 'off'}"
-                    + (f" ({where})" if self._code_mode else " — classic tool calls"))
+        self._code_mode = (
+            (arg != "off") if arg in ("on", "off") else (not self._code_mode)
+        )
+        where = (
+            "microVM-isolated"
+            if getattr(self._sandbox, "kind", "host") == "microvm"
+            else "in-process"
+        )
+        self.notify(
+            f"code-mode {'on' if self._code_mode else 'off'}"
+            + (f" ({where})" if self._code_mode else " — classic tool calls")
+        )
 
     def action_vim(self) -> None:
         """/vim — toggle modal editing on the prompt (persisted)."""
@@ -1781,6 +2260,7 @@ class HarnessApp(App):
             self._write_help()
         elif cmd in ("agent", "mode"):
             from ..agent.presets import PRESETS, get_preset
+
             if arg in PRESETS:
                 self._preset = get_preset(arg)
                 self._apply_preset()
@@ -1871,7 +2351,9 @@ class HarnessApp(App):
     def _write_help(self) -> None:
         names = sorted(self._skill_names())
         body = Text()
-        body.append("type a message and press Enter to talk to the model.\n\n", render.C_DIM)
+        body.append(
+            "type a message and press Enter to talk to the model.\n\n", render.C_DIM
+        )
         body.append("keys\n", "bold")
         for k, d in [
             ("Esc", "stop the current turn (then /rewind or just re-ask)"),
@@ -1894,11 +2376,18 @@ class HarnessApp(App):
             body.append(f"  /{name:<16}", render.C_OK)
             body.append(f"{desc}\n", render.C_DIM)
         if names:
-            body.append("\nskills  (run with /<name> <text> — grammar-constrained, valid output)\n",
-                        "bold")
+            body.append(
+                "\nskills  (run with /<name> <text> — grammar-constrained, valid output)\n",
+                "bold",
+            )
             body.append("  " + "   ".join(names), render.C_OK)
-        panel = Panel(body, title="help — keys & commands", title_align="left",
-                      border_style=render.B_ACCENT, padding=(1, 2))
+        panel = Panel(
+            body,
+            title="help — keys & commands",
+            title_align="left",
+            border_style=render.B_ACCENT,
+            padding=(1, 2),
+        )
         self.push_screen(OverlayScreen(panel, hint="↑↓ scroll · esc to close"))
 
     async def _skill_worker(self, name: str, prompt: str) -> None:
@@ -1915,12 +2404,26 @@ class HarnessApp(App):
             log.append(rid, RUN_FAILED, {"error": f"{type(e).__name__}: {e}"})
             self.notify(f"skill error: {e}", severity="error")
             return
-        log.append(rid, MODEL_CALL, {
-            "call_index": 0, "seed": 1, "request_body": {},
-            "response": {"choices": [{"message": {"role": "assistant", "content": result.text},
-                                      "finish_reason": "stop"}]},
-            "timing_ms": (time.monotonic() - t0) * 1000,
-            "logprob_summary": None, "grammar_valid": result.valid})
+        log.append(
+            rid,
+            MODEL_CALL,
+            {
+                "call_index": 0,
+                "seed": 1,
+                "request_body": {},
+                "response": {
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": result.text},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                },
+                "timing_ms": (time.monotonic() - t0) * 1000,
+                "logprob_summary": None,
+                "grammar_valid": result.valid,
+            },
+        )
         log.append(rid, RUN_COMPLETED, {"answer": result.text})
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -1945,7 +2448,7 @@ class HarnessApp(App):
 
     def action_replay(self) -> None:
         if self.server is not None:
-            self.notify("replay runs on the server — use `harness replay` there", timeout=6)
+            self.notify("replay runs on the server — use `lo replay` there", timeout=6)
             return
         if self.active:
             self.run_worker(self._replay_worker(self.active), exclusive=False)
@@ -1981,8 +2484,12 @@ class HarnessApp(App):
         self._recompute_stats()
         self._stats_dirty = False
         panel = usage_panel(
-            self._stats, model=self.client.model, tier=self.caps.tier(),
-            deterministic=self.caps.seed, learn_summary=self._learn_summary)
+            self._stats,
+            model=self.client.model,
+            tier=self.caps.tier(),
+            deterministic=self.caps.seed,
+            learn_summary=self._learn_summary,
+        )
         self.push_screen(OverlayScreen(panel, hint="↑↓ scroll · esc / ^u to close"))
 
     # --- theming ---------------------------------------------------------
@@ -2018,6 +2525,7 @@ class HarnessApp(App):
         """Switch theme and repaint everything already on screen with the new palette."""
         self._preview_theme(name)
         from textual.css.query import NoMatches
+
         try:
             self._rendered = 0
             self.query_one("#chat", RichLog).clear()
@@ -2047,6 +2555,7 @@ class HarnessApp(App):
             if chosen:
                 self._save_config_value("theme", chosen)
                 self.notify(f"theme: {chosen}")
+
         self.push_screen(ThemePickerScreen(list(render.THEMES), current), done)
 
     def action_memory(self, arg: str = "") -> None:
@@ -2059,17 +2568,25 @@ class HarnessApp(App):
         if arg.split()[:1] == ["edit"]:
             scope = arg.split(None, 1)[1].strip() if " " in arg else "project"
             return self._memory_edit(scope)
-        sections = [("USER.md", self.notebook.user.read()),
-                    ("MEMORY.md", self.notebook.memory.read())]
+        sections = [
+            ("USER.md", self.notebook.user.read()),
+            ("MEMORY.md", self.notebook.memory.read()),
+        ]
         if self.notebook.project is not None:
             sections.append(("PROJECT.md", self.notebook.project.read()))
         recall: list[tuple[str, str]] = []
         if self._memory is not None and self.active:
             meta = self.event_log.run(self.active)
             if meta:
-                recall = [(h.kind, h.text) for h in self._memory.recall(meta.task, limit=5)]
-        self.push_screen(OverlayScreen(render.memory_panel(sections, recall),
-                                       hint="/memory edit <user|memory|project> · esc to close"))
+                recall = [
+                    (h.kind, h.text) for h in self._memory.recall(meta.task, limit=5)
+                ]
+        self.push_screen(
+            OverlayScreen(
+                render.memory_panel(sections, recall),
+                hint="/memory edit <user|memory|project> · esc to close",
+            )
+        )
 
     def _memory_edit(self, scope: str) -> None:
         f = self.notebook._file(scope) if self.notebook else None
@@ -2088,37 +2605,71 @@ class HarnessApp(App):
         if not self.active:
             self.notify("no active run")
             return
-        spawned = [ev.payload for ev in self.event_log.events(self.active, type=AGENT_SPAWNED)]
+        spawned = [
+            ev.payload for ev in self.event_log.events(self.active, type=AGENT_SPAWNED)
+        ]
         status = {r.run_id: r.status for r in self.event_log.runs()}
         meta = self.event_log.run(self.active)
-        body: list = [Text.assemble(("● lead ", "bold " + render.C_OK),
-                                    (self.active[:8], render.C_DIM),
-                                    (f"  {status.get(self.active, '?')}", render.C_DIM))]
+        body: list = [
+            Text.assemble(
+                ("● lead ", "bold " + render.C_OK),
+                (self.active[:8], render.C_DIM),
+                (f"  {status.get(self.active, '?')}", render.C_DIM),
+            )
+        ]
         if meta:
-            body.append(Padding(Text(meta.task[:72], style=render.C_ANSWER), (0, 0, 1, 2)))
+            body.append(
+                Padding(Text(meta.task[:72], style=render.C_ANSWER), (0, 0, 1, 2))
+            )
         if not spawned:
-            body.append(Text("no workers yet — the lead can call spawn_agents([...]) "
-                             "to fan out", style=render.C_DIM))
+            body.append(
+                Text(
+                    "no workers yet — the lead can call spawn_agents([...]) to fan out",
+                    style=render.C_DIM,
+                )
+            )
         for s in spawned:
             cid = s.get("child_run_id", "")
             st = status.get(cid, "?")
             glyph = "✓" if st == "completed" else "✗" if st == "failed" else "…"
-            body.append(Text.assemble((f"  └─ {glyph} worker ", "bold " + render.C_GOLD),
-                                      (cid[:8], render.C_DIM), (f"  {st}", render.C_DIM)))
-            body.append(Padding(Text(str(s.get("task", ""))[:68], style=render.C_ANSWER),
-                                (0, 0, 1, 5)))
-        self.push_screen(OverlayScreen(
-            Panel(Group(*body), title="✦ agents (team)", title_align="left",
-                  border_style=render.B_ACCENT, padding=(1, 2)), hint="esc to close"))
+            body.append(
+                Text.assemble(
+                    (f"  └─ {glyph} worker ", "bold " + render.C_GOLD),
+                    (cid[:8], render.C_DIM),
+                    (f"  {st}", render.C_DIM),
+                )
+            )
+            body.append(
+                Padding(
+                    Text(str(s.get("task", ""))[:68], style=render.C_ANSWER),
+                    (0, 0, 1, 5),
+                )
+            )
+        self.push_screen(
+            OverlayScreen(
+                Panel(
+                    Group(*body),
+                    title="✦ agents (team)",
+                    title_align="left",
+                    border_style=render.B_ACCENT,
+                    padding=(1, 2),
+                ),
+                hint="esc to close",
+            )
+        )
 
     def action_mcp(self) -> None:
         """/mcp — show configured MCP servers + UTCP manuals and the loaded tool count."""
         cfg = self.tools_config or {}
         mcp, utcp = cfg.get("mcp", []), cfg.get("utcp", [])
-        deferred = self._tool_registry.deferrable_names() if self._tool_registry else set()
+        deferred = (
+            self._tool_registry.deferrable_names() if self._tool_registry else set()
+        )
         body: list = [Text("MCP servers", style="bold " + render.C_GOLD)]
         if not mcp:
-            body.append(Text("  (none — add via the --tools config)", style=render.C_DIM))
+            body.append(
+                Text("  (none — add via the --tools config)", style=render.C_DIM)
+            )
         for s in mcp:
             loc = s.get("url") or " ".join(s.get("command", [])) or "?"
             tag = "http" if s.get("url") else "stdio"
@@ -2126,20 +2677,41 @@ class HarnessApp(App):
                 tag += " · 🔒 auth"
             if s.get("namespace"):
                 tag += " · " + s["namespace"]
-            body.append(Text.assemble(("  • ", render.C_OK), (loc, render.C_ANSWER),
-                                      (f"  [{tag}]", render.C_DIM)))
+            body.append(
+                Text.assemble(
+                    ("  • ", render.C_OK),
+                    (loc, render.C_ANSWER),
+                    (f"  [{tag}]", render.C_DIM),
+                )
+            )
         body.append(Text(""))
         body.append(Text("UTCP manuals", style="bold " + render.C_GOLD))
         if not utcp:
             body.append(Text("  (none)", style=render.C_DIM))
         for m in utcp:
             name = m if isinstance(m, str) else (m.get("namespace") or "inline manual")
-            body.append(Text.assemble(("  • ", render.C_OK), (str(name), render.C_ANSWER)))
-        body.append(Text(f"\n{len(deferred)} external tool(s) loaded · deferred behind "
-                         "tool_search when the toolset exceeds 15", style=render.C_DIM))
-        self.push_screen(OverlayScreen(
-            Panel(Group(*body), title="✦ tool sources (MCP / UTCP)", title_align="left",
-                  border_style=render.B_ACCENT, padding=(1, 2)), hint="esc to close"))
+            body.append(
+                Text.assemble(("  • ", render.C_OK), (str(name), render.C_ANSWER))
+            )
+        body.append(
+            Text(
+                f"\n{len(deferred)} external tool(s) loaded · deferred behind "
+                "tool_search when the toolset exceeds 15",
+                style=render.C_DIM,
+            )
+        )
+        self.push_screen(
+            OverlayScreen(
+                Panel(
+                    Group(*body),
+                    title="✦ tool sources (MCP / UTCP)",
+                    title_align="left",
+                    border_style=render.B_ACCENT,
+                    padding=(1, 2),
+                ),
+                hint="esc to close",
+            )
+        )
 
     def action_review(self, kind: str = "review", arg: str = "") -> None:
         """/review and /security-review: gather the git diff and review it read-only
@@ -2149,23 +2721,36 @@ class HarnessApp(App):
     async def _review_worker(self, kind: str, arg: str) -> None:
         await self._caps_ready.wait()
         import subprocess
+
         spec = arg or "HEAD"
         try:
-            diff = subprocess.run(["git", "diff", spec], capture_output=True,
-                                  text=True, timeout=15).stdout
-            if not diff.strip() and not arg:  # nothing vs HEAD → plain working-tree diff
-                diff = subprocess.run(["git", "diff"], capture_output=True,
-                                      text=True, timeout=15).stdout
+            diff = subprocess.run(
+                ["git", "diff", spec], capture_output=True, text=True, timeout=15
+            ).stdout
+            if (
+                not diff.strip() and not arg
+            ):  # nothing vs HEAD → plain working-tree diff
+                diff = subprocess.run(
+                    ["git", "diff"], capture_output=True, text=True, timeout=15
+                ).stdout
         except Exception as e:  # noqa: BLE001
             self.notify(f"git diff failed: {e}", severity="error")
             return
         if not diff.strip():
-            self.notify("nothing to review — the working tree is clean (try /review <ref>)")
+            self.notify(
+                "nothing to review — the working tree is clean (try /review <ref>)"
+            )
             return
         from ..agent.presets import get_preset
+
         label = "security review" if kind == "security-review" else "code review"
-        task = (f"Perform a {label} of the following diff"
-                + (f" ({arg})" if arg else "") + ".\n\n```diff\n" + diff[:20000] + "\n```")
+        task = (
+            f"Perform a {label} of the following diff"
+            + (f" ({arg})" if arg else "")
+            + ".\n\n```diff\n"
+            + diff[:20000]
+            + "\n```"
+        )
         self.notify(f"{label}: analyzing {len(diff)} chars of diff…")
         self._blank = False
         self._follow = True
@@ -2176,19 +2761,32 @@ class HarnessApp(App):
             self.notify(f"review error: {e}", severity="error")
         # Grammar-enforce the findings into a guaranteed-valid structured list (a
         # local-only edge — needs a Tier-2 server with grammar support).
-        if (result is not None and self.caps and self.caps.grammar
-                and (result.answer or "").strip()):
+        if (
+            result is not None
+            and self.caps
+            and self.caps.grammar
+            and (result.answer or "").strip()
+        ):
             await self._enforce_findings(kind, result.answer)
         await self._auto_consolidate()
 
     async def _enforce_findings(self, kind: str, prose: str) -> None:
         try:
             from ..skills.exec import generate_with_skill
-            prompt = ("Convert the review below into the structured findings list — one per "
-                      "line as `<file>:<line> — <severity> — <issue>`. If there are no real "
-                      "issues, output exactly: No findings.\n\nReview:\n" + prose)
-            r = await generate_with_skill(self.client, self.caps, _findings_skill(kind),
-                                          prompt, seed=1, max_tokens=1024)
+
+            prompt = (
+                "Convert the review below into the structured findings list — one per "
+                "line as `<file>:<line> — <severity> — <issue>`. If there are no real "
+                "issues, output exactly: No findings.\n\nReview:\n" + prose
+            )
+            r = await generate_with_skill(
+                self.client,
+                self.caps,
+                _findings_skill(kind),
+                prompt,
+                seed=1,
+                max_tokens=1024,
+            )
             if r.valid and r.text.strip():
                 self.query_one(RichLog).write(render.findings_panel(r.text, kind))
         except Exception:  # noqa: BLE001 — the prose review already showed; this is a bonus
@@ -2203,8 +2801,11 @@ class HarnessApp(App):
             return
         breakdown = render.context_breakdown(msgs, tools)
         window = self.caps.context_window if self.caps else None
-        self.push_screen(OverlayScreen(render.context_panel(breakdown, window=window),
-                                       hint="esc to close"))
+        self.push_screen(
+            OverlayScreen(
+                render.context_panel(breakdown, window=window), hint="esc to close"
+            )
+        )
 
     def action_plan_fork(self) -> None:
         """Fork N candidate plans for the active task and show them ranked. In
@@ -2222,15 +2823,19 @@ class HarnessApp(App):
         if not task:
             self.notify("no task to fork", severity="warning")
             return
-        self.notify("plan-fork: generating candidate plans (free on local prefix-cache)…")
+        self.notify(
+            "plan-fork: generating candidate plans (free on local prefix-cache)…"
+        )
         try:
             if self.server is not None:
                 cands = await self._server_plan_fork(task, n=4)
             else:
                 from ..tree.search.plan_search import plan_search
                 from ..inference.types import Message
+
                 cands = await plan_search(
-                    self.client, self.caps, [Message(role="user", content=task)], n=4)
+                    self.client, self.caps, [Message(role="user", content=task)], n=4
+                )
         except Exception as e:
             self.notify(f"plan-fork error: {e}", severity="error")
             return
@@ -2241,10 +2846,13 @@ class HarnessApp(App):
         """Run one live advantage demo (/samplers, /overlay, …) against the
         connected endpoint and write its panel to the transcript."""
         from .advantages import ADVANTAGES
+
         await self._caps_ready.wait()
         if self.client is None or self.caps is None:
-            self.notify(f"/{name} needs a live endpoint — run `harness tui --in-process`",
-                        severity="warning")
+            self.notify(
+                f"/{name} needs a live endpoint — run `lo tui --in-process`",
+                severity="warning",
+            )
             return
         self.notify(f"/{name}: running live on {self.client.model}…")
         # Stream into the live region so the model types its output: a single stream
@@ -2258,15 +2866,19 @@ class HarnessApp(App):
 
         def token(kind: str, text: str) -> None:
             if kind == "reasoning":
-                self._live_reasoning += text   # shows "✎ thinking…" so it's visibly working
+                self._live_reasoning += (
+                    text  # shows "✎ thinking…" so it's visibly working
+                )
             else:
                 self._live_content += text
             self._render_live()
 
         def fan(labels: list[str], title: str) -> None:
             self._live_fan_title = title
-            self._live_streams = [{"label": l, "text": "", "reason": "", "status": "run",
-                                   "result": ""} for l in labels]
+            self._live_streams = [
+                {"label": l, "text": "", "reason": "", "status": "run", "result": ""}
+                for l in labels
+            ]
             self._render_live()
 
         def fan_token(i: int, kind: str, text: str) -> None:
@@ -2278,13 +2890,15 @@ class HarnessApp(App):
             self._live_streams[i].update(status="done", result=result)
             self._render_live()
 
-        def reset() -> None:   # clear the live area between grammar retries
+        def reset() -> None:  # clear the live area between grammar retries
             self._live_content = self._live_reasoning = ""
             self._render_live()
 
         from types import SimpleNamespace
-        live = SimpleNamespace(token=token, fan=fan, fan_token=fan_token,
-                               fan_done=fan_done, reset=reset)
+
+        live = SimpleNamespace(
+            token=token, fan=fan, fan_token=fan_token, fan_done=fan_done, reset=reset
+        )
         try:
             renderable = await ADVANTAGES[name](self.client, self.caps, live=live)
         except Exception as e:  # noqa: BLE001 — surface any endpoint/runtime error to the user
@@ -2302,6 +2916,7 @@ class HarnessApp(App):
         """Ask the session server to run the fan-out plan search and return its
         ranked candidates (dicts: {"text", "score"}, best-first)."""
         import httpx
+
         async with httpx.AsyncClient(timeout=None) as c:
             r = await c.post(f"{self.server}/session/plan", json={"task": task, "n": n})
             r.raise_for_status()
@@ -2312,6 +2927,7 @@ class HarnessApp(App):
             if result:
                 url, model, key = result
                 self.run_worker(self._reconnect(url, model, key), exclusive=False)
+
         self.push_screen(ConnectScreen(self.client.base_url, self.client.model), done)
 
     def action_delete_run(self) -> None:
@@ -2361,13 +2977,17 @@ class HarnessApp(App):
         snipped = {e.payload.get("seq") for e in events if e.type == MESSAGE_SNIPPED}
         chat = self.query_one(RichLog)
         wrote = False
-        for ev in events[self._rendered:]:
+        for ev in events[self._rendered :]:
             if ev.type == MESSAGE_SNIPPED:
                 continue  # the marker itself isn't shown
             if ev.seq in snipped:  # collapsed turn — show a one-line snip marker
                 name = ev.payload.get("name") or ev.type
-                chat.write(Text.assemble(("  ✂ ", render.C_RESAMPLE),
-                                         (f"[snipped: {name}]", render.C_DIM)))
+                chat.write(
+                    Text.assemble(
+                        ("  ✂ ", render.C_RESAMPLE),
+                        (f"[snipped: {name}]", render.C_DIM),
+                    )
+                )
                 wrote = True
                 continue
             renderable = chat_render_event(ev, show_thinking=self._show_thinking)
@@ -2379,16 +2999,25 @@ class HarnessApp(App):
             if ev.type == MODEL_CALL:  # the streamed turn is now committed
                 self._streaming = False
                 self._live_content = self._live_reasoning = self._live_ghost = ""
-            if ev.type == TOOL_CALL:   # its result is in — stop the "running" indicator
+            if ev.type == TOOL_CALL:  # its result is in — stop the "running" indicator
                 self._running_tool = None
-            if (ev.type == RUN_COMPLETED and self._expect_plan
-                    and not self._plan_pending and ev.run_id == self.active):
+            if (
+                ev.type == RUN_COMPLETED
+                and self._expect_plan
+                and not self._plan_pending
+                and ev.run_id == self.active
+            ):
                 self._expect_plan = False
                 self._present_plan(self.active)
-            if ev.type == CONTEXT_COMPACTED:  # auto-compaction fired — say so, re-arm the warning
+            if (
+                ev.type == CONTEXT_COMPACTED
+            ):  # auto-compaction fired — say so, re-arm the warning
                 p = ev.payload
-                self.notify(f"⛁ context compacted: {render._ktok(p.get('before_tokens', 0))} → "
-                            f"{render._ktok(p.get('after_tokens', 0))} tokens", timeout=6)
+                self.notify(
+                    f"⛁ context compacted: {render._ktok(p.get('before_tokens', 0))} → "
+                    f"{render._ktok(p.get('after_tokens', 0))} tokens",
+                    timeout=6,
+                )
                 self._ctx_warn_level = 0
                 self._stats_dirty = True
         self._rendered = len(events)
@@ -2406,7 +3035,12 @@ class HarnessApp(App):
             table.clear()
             for rid, status, task in state:
                 table.add_row(rid[:8], status_text(status), task[:24], key=rid)
-            if not self._blank and self._follow and runs and runs[-1].run_id != self.active:
+            if (
+                not self._blank
+                and self._follow
+                and runs
+                and runs[-1].run_id != self.active
+            ):
                 self._set_active(runs[-1].run_id)
             if self.active in self._run_ids:
                 table.move_cursor(row=self._run_ids.index(self.active))

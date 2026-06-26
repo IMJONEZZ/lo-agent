@@ -1,4 +1,4 @@
-"""CLI: harness probe | run | resume | replay | runs."""
+"""CLI: lo probe | run | resume | replay | runs."""
 
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ from ..inference.client import OpenAICompatClient
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--url", default=os.environ.get("HARNESS_BASE_URL", "http://localhost:8080"))
+    p.add_argument(
+        "--url", default=os.environ.get("HARNESS_BASE_URL", "http://localhost:8080")
+    )
     p.add_argument("--model", default=os.environ.get("HARNESS_MODEL", ""))
     p.add_argument("--db", default=os.environ.get("HARNESS_DB", "harness.db"))
 
@@ -49,21 +51,29 @@ async def cmd_lora(args) -> None:
         caps = await probe(client)
         if caps.lora_mode is None:
             print(f"LoRA hot-swap: not available on this server ({caps.server})")
-            print("  vLLM (with --enable-lora) and llama.cpp (--lora) support per-request "
-                  "adapters; native runs them in-process.")
+            print(
+                "  vLLM (with --enable-lora) and llama.cpp (--lora) support per-request "
+                "adapters; native runs them in-process."
+            )
             return
         print(f"LoRA hot-swap: {caps.lora_mode}")
         if caps.lora_mode == "llamacpp":
             if not caps.lora_adapters:
-                print("  no adapters preloaded — start llama-server with --lora <file.gguf>")
+                print(
+                    "  no adapters preloaded — start llama-server with --lora <file.gguf>"
+                )
             for a in caps.lora_adapters:
-                print(f"  id {a.get('id')}  scale {a.get('scale', 1.0)}  {a.get('path', '')}")
+                print(
+                    f"  id {a.get('id')}  scale {a.get('scale', 1.0)}  {a.get('path', '')}"
+                )
         elif caps.lora_mode == "vllm":
             print("  served models/adapters (request model=<name> to use one):")
             for m in await client.list_models():
                 print(f"    {m}")
-            print("  load a new one at runtime via POST /v1/load_lora_adapter "
-                  "(needs VLLM_ALLOW_RUNTIME_LORA_UPDATING)")
+            print(
+                "  load a new one at runtime via POST /v1/load_lora_adapter "
+                "(needs VLLM_ALLOW_RUNTIME_LORA_UPDATING)"
+            )
 
 
 def cmd_sandbox(args) -> None:
@@ -85,28 +95,45 @@ def cmd_sandbox(args) -> None:
     msb = shutil.which("msb")
     try:
         import microsandbox  # noqa: F401
+
         sdk = True
     except Exception:
         sdk = False
     mark = lambda b: "✓" if b else "✗"  # noqa: E731
     print("microVM sandbox readiness")
-    print(f"  {mark(kvm)} KVM (/dev/kvm)        {'present' if kvm else 'MISSING — enable virtualization'}")
+    print(
+        f"  {mark(kvm)} KVM (/dev/kvm)        {'present' if kvm else 'MISSING — enable virtualization'}"
+    )
     print(f"  {mark(bool(msb))} msb runtime          {msb or 'not installed'}")
-    print(f"  {mark(sdk)} microsandbox SDK     {'importable' if sdk else 'not installed (uv sync --extra sandbox)'}")
+    print(
+        f"  {mark(sdk)} microsandbox SDK     {'importable' if sdk else 'not installed (uv sync --extra sandbox)'}"
+    )
     ready = kvm and msb and sdk
-    print(f"\n  {'READY — bash/file tools can run in a microVM' if ready else 'NOT READY — run: harness sandbox install'}")
+    print(
+        f"\n  {'READY — bash/file tools can run in a microVM' if ready else 'NOT READY — run: lo sandbox install'}"
+    )
 
 
 async def cmd_bench(args) -> None:
     from ..bench import run_bench, format_report
+
     async with await _client(args) as client:
         if not client.model:
             models = await client.list_models()
             client.model = models[0] if models else ""
         caps = await probe(client)
-        results = await run_bench(client, caps, skills_dir=args.skills_dir, n=args.n,
-                                  batch_invariance=not args.no_batch_invariance)
-        print(format_report(results, model=client.model, server=caps.server, tier=caps.tier()))
+        results = await run_bench(
+            client,
+            caps,
+            skills_dir=args.skills_dir,
+            n=args.n,
+            batch_invariance=not args.no_batch_invariance,
+        )
+        print(
+            format_report(
+                results, model=client.model, server=caps.server, tier=caps.tier()
+            )
+        )
 
 
 def _guardrails_factory(args, tools: ToolRegistry):
@@ -117,29 +144,42 @@ def _guardrails_factory(args, tools: ToolRegistry):
     from ..agent.codemode import RUN_CODE_NAME
     from ..agent.tools import TOOL_SEARCH_NAME
     from ..server.coordinator import SEND_MESSAGE_NAME, SPAWN_AGENTS_NAME
+
     required = [s for s in (args.required_steps or "").split(",") if s]
     terminal = frozenset(s for s in (args.terminal_tool or "").split(",") if s)
-    names = ([s["function"]["name"] for s in tools.schemas()]
-             + [TOOL_SEARCH_NAME, SPAWN_AGENTS_NAME, SEND_MESSAGE_NAME, RUN_CODE_NAME])
-    return lambda: Guardrails(tool_names=names, required_steps=required,
-                              terminal_tools=terminal)
+    names = [s["function"]["name"] for s in tools.schemas()] + [
+        TOOL_SEARCH_NAME,
+        SPAWN_AGENTS_NAME,
+        SEND_MESSAGE_NAME,
+        RUN_CODE_NAME,
+    ]
+    return lambda: Guardrails(
+        tool_names=names, required_steps=required, terminal_tools=terminal
+    )
 
 
 def _make_agent(args, client, caps, log, sandbox=None, on_compact=None) -> Agent:
     tools = ToolRegistry(builtin_tools(sandbox=sandbox))
-    return Agent(client, tools, log, capabilities=caps, max_steps=args.max_steps,
-                 guardrails_factory=_guardrails_factory(args, tools),
-                 context_budget=args.context_budget,
-                 compact_fraction=getattr(args, "compact_fraction", 0.85),
-                 code_mode=getattr(args, "code_mode", True), sandbox=sandbox,
-                 on_compact=on_compact)
+    return Agent(
+        client,
+        tools,
+        log,
+        capabilities=caps,
+        max_steps=args.max_steps,
+        guardrails_factory=_guardrails_factory(args, tools),
+        context_budget=args.context_budget,
+        compact_fraction=getattr(args, "compact_fraction", 0.85),
+        code_mode=getattr(args, "code_mode", True),
+        sandbox=sandbox,
+        on_compact=on_compact,
+    )
 
 
 _SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 def _cli_status(log, run_id, caps, t0, *, tool=None, spin=None):
-    """A status renderable for `harness run`: separator + the harness status bar
+    """A status renderable for `lo run`: separator + the harness status bar
     (preset · tier · ctx% · $ saved · determinism), with an optional live
     spinner/elapsed/running-tool head."""
     import time
@@ -155,20 +195,29 @@ def _cli_status(log, run_id, caps, t0, *, tool=None, spin=None):
         body = calls[-1].payload.get("request_body") or {}
         used = render.context_used(body.get("messages") or [], body.get("tools"))
         w = caps.context_window
-        ctx = (f"{round(used / w * 100)}%", used / w) if w else (render._ktok(used), None)
+        ctx = (
+            (f"{round(used / w * 100)}%", used / w) if w else (render._ktok(used), None)
+        )
     tin = tout = 0
     for ev in calls:
         a, b = render.tokens_of(ev.payload)
         tin += a
         tout += b
-    bar = render.status_bar(preset="run", tier=caps.tier(),
-                            glyphs=render.ability_glyphs(caps),
-                            saved=render.frontier_saved(tin, tout),
-                            deterministic=caps.seed, learn="off", ctx=ctx)
+    bar = render.status_bar(
+        preset="run",
+        tier=caps.tier(),
+        glyphs=render.ability_glyphs(caps),
+        saved=render.frontier_saved(tin, tout),
+        deterministic=caps.seed,
+        learn="off",
+        ctx=ctx,
+    )
     parts = [Text("─" * 46, style=render.C_DIM)]
     if spin is not None:
-        head = Text.assemble((_SPIN[spin % len(_SPIN)] + " ", render.C_RESAMPLE),
-                             (f"{time.time() - t0:.0f}s", render.C_DIM))
+        head = Text.assemble(
+            (_SPIN[spin % len(_SPIN)] + " ", render.C_RESAMPLE),
+            (f"{time.time() - t0:.0f}s", render.C_DIM),
+        )
         if tool:
             head.append(f"  ⚙ {tool}…", style=render.C_TOOL)
         parts.append(head)
@@ -183,40 +232,61 @@ async def cmd_run(args) -> None:
     import time
 
     from ..sandbox import make_sandbox, SandboxUnavailable
+
     try:
         sandbox = make_sandbox(getattr(args, "sandbox", "host"), os.getcwd())
     except SandboxUnavailable as e:
         raise SystemExit(f"✗ {e}")
     if sandbox.kind != "host":
-        print(f"⛨ tools run inside a {sandbox.kind} sandbox (workdir mounted, host isolated)")
+        print(
+            f"⛨ tools run inside a {sandbox.kind} sandbox (workdir mounted, host isolated)"
+        )
     result = None
     log = caps = run_id = t0 = None
     try:
         from .progress import CompactionProgressBar
+
         async with await _client(args) as client:
             caps = await probe(client)
             log = EventLog(args.db)
             run_id = log.create_run(args.task)  # pre-create so the live bar can read it
-            agent = _make_agent(args, client, caps, log, sandbox=sandbox,
-                                on_compact=CompactionProgressBar())
+            agent = _make_agent(
+                args,
+                client,
+                caps,
+                log,
+                sandbox=sandbox,
+                on_compact=CompactionProgressBar(),
+            )
             state = {"tool": None}
             agent.on_tool = lambda name, phase: state.__setitem__(
-                "tool", name if phase == "start" else None)
+                "tool", name if phase == "start" else None
+            )
             if agent.auto_budget:
-                print(f"⛁ auto-compact armed at {agent.context_budget:,} tokens "
-                      f"({int(agent.compact_fraction * 100)}% of {caps.context_window:,}-token "
-                      f"context window)")
+                print(
+                    f"⛁ auto-compact armed at {agent.context_budget:,} tokens "
+                    f"({int(agent.compact_fraction * 100)}% of {caps.context_window:,}-token "
+                    f"context window)"
+                )
             t0 = time.time()
             if sys.stdout.isatty():  # live bottom status bar while the run works
                 from rich.console import Console
                 from rich.live import Live
-                with Live(console=Console(), refresh_per_second=8, transient=True) as live:
+
+                with Live(
+                    console=Console(), refresh_per_second=8, transient=True
+                ) as live:
+
                     async def _refresh(spin=0):
                         while True:
-                            live.update(_cli_status(log, run_id, caps, t0,
-                                                    tool=state["tool"], spin=spin))
+                            live.update(
+                                _cli_status(
+                                    log, run_id, caps, t0, tool=state["tool"], spin=spin
+                                )
+                            )
                             spin += 1
                             await aio.sleep(0.15)
+
                     ref = aio.ensure_future(_refresh())
                     try:
                         result = await agent.run(args.task, run_id=run_id)
@@ -230,9 +300,12 @@ async def cmd_run(args) -> None:
         print(result.answer)
         if sys.stdout.isatty():  # a final, persistent status line
             from rich.console import Console
+
             Console().print(_cli_status(log, run_id, caps, t0))
-        print(f"[run {result.run_id}] {result.status} · {result.model_calls} model calls "
-              f"· tier {caps.tier()}")
+        print(
+            f"[run {result.run_id}] {result.status} · {result.model_calls} model calls "
+            f"· tier {caps.tier()}"
+        )
 
 
 async def cmd_resume(args) -> None:
@@ -240,7 +313,9 @@ async def cmd_resume(args) -> None:
         caps = await probe(client)
         agent = _make_agent(args, client, caps, EventLog(args.db))
         result = await agent.resume(args.run_id)
-        print(f"[run {result.run_id}] {result.status} after {result.model_calls} model calls")
+        print(
+            f"[run {result.run_id}] {result.status} after {result.model_calls} model calls"
+        )
         print(result.answer)
 
 
@@ -267,13 +342,20 @@ async def cmd_replay_tuned(args) -> None:
         label = []
         if args.skill:
             from ..skills.skill import SkillRegistry
+
             skill = SkillRegistry(args.skills_dir).get(args.skill)
             label.append(f"grammar:{args.skill}")
         if args.instruction:
             label.append("prompt-opt")
-        iv = Intervention(label=" + ".join(label), skill=skill,
-                          system_prompt=args.instruction, seed=args.seed)
-        report = await replay_tuned(log, args.run_id, client, caps, iv, fork_index=args.fork)
+        iv = Intervention(
+            label=" + ".join(label),
+            skill=skill,
+            system_prompt=args.instruction,
+            seed=args.seed,
+        )
+        report = await replay_tuned(
+            log, args.run_id, client, caps, iv, fork_index=args.fork
+        )
         print(report.summary())
 
 
@@ -293,8 +375,10 @@ async def cmd_skill(args) -> None:
             client, caps, skill, args.prompt or "", seed=args.seed
         )
         grammar_status = result.plan.status_of("grammar")
-        print(f"[{skill.name}] valid={result.valid} attempts={result.attempts} "
-              f"grammar={grammar_status.value if grammar_status else 'n/a'} (tier {caps.tier()})")
+        print(
+            f"[{skill.name}] valid={result.valid} attempts={result.attempts} "
+            f"grammar={grammar_status.value if grammar_status else 'n/a'} (tier {caps.tier()})"
+        )
         print(result.text)
 
 
@@ -306,19 +390,33 @@ async def cmd_background(args) -> None:
     memory = Memory(args.memory_db)
     async with await _client(args) as client:
         from ..inference.capabilities import probe
+
         caps = await probe(client)
         n_episodes = await consolidate(log, memory, client, limit=args.limit)
-        n_lessons = await reflect(log, memory, client, limit=args.limit,
-                                  caps=caps, min_agreement=args.min_agreement)
-        skill_docs = await auto_skills(log, client, args.drafts_dir, memory=memory, limit=args.limit)
+        n_lessons = await reflect(
+            log,
+            memory,
+            client,
+            limit=args.limit,
+            caps=caps,
+            min_agreement=args.min_agreement,
+        )
+        skill_docs = await auto_skills(
+            log, client, args.drafts_dir, memory=memory, limit=args.limit
+        )
         proposed = []
         if getattr(args, "autonomous_actions", False):
             from ..background import propose_actions
-            proposed = await propose_actions(log, client, args.drafts_dir, limit=args.limit)
+
+            proposed = await propose_actions(
+                log, client, args.drafts_dir, limit=args.limit
+            )
     drafts = induce_skills(log, args.drafts_dir)
-    print(f"consolidated {n_episodes} episodes, {n_lessons} lessons, {len(skill_docs)} skill docs"
-          + (f", {len(proposed)} proposed actions" if proposed else "")
-          + f"; memory now holds {memory.count()} entries")
+    print(
+        f"consolidated {n_episodes} episodes, {n_lessons} lessons, {len(skill_docs)} skill docs"
+        + (f", {len(proposed)} proposed actions" if proposed else "")
+        + f"; memory now holds {memory.count()} entries"
+    )
     for d in [*skill_docs, *drafts, *proposed]:
         print(f"wrote: {d}")
 
@@ -354,7 +452,7 @@ def cmd_proxy(args) -> None:
         max_internal_retries=args.max_internal_retries,
     )
     app = create_app(ProxyEngine(cfg))
-    print(f"harness proxy: {args.host}:{args.port} -> {cfg.upstream_url}")
+    print(f"lo proxy: {args.host}:{args.port} -> {cfg.upstream_url}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
@@ -375,10 +473,12 @@ def cmd_tui(args) -> None:
     if server is None and not getattr(args, "in_process", False):
         server, embedded = _start_embedded_server(args)
         shared_db = True
-        print(f"harness tui: embedded server at {server} (tail it from another terminal)")
+        print(f"lo tui: embedded server at {server} (tail it from another terminal)")
 
     app = HarnessApp(
-        client, args.db, max_steps=args.max_steps,
+        client,
+        args.db,
+        max_steps=args.max_steps,
         use_guardrails=not args.no_guardrails,
         required_steps=[s for s in (args.required_steps or "").split(",") if s],
         terminal_tools=frozenset(s for s in (args.terminal_tool or "").split(",") if s),
@@ -411,6 +511,7 @@ def cmd_runs(args) -> None:
 def _aggregate_stats(log: EventLog) -> dict:
     """Tokens, frontier-equivalent saving, calls and resamples across all runs."""
     from ..tui.render import frontier_saved, tokens_of
+
     tin = tout = calls = resamples = 0
     for r in log.runs():
         for ev in log.events(r.run_id):
@@ -421,19 +522,27 @@ def _aggregate_stats(log: EventLog) -> dict:
                 tout += b
             elif ev.type == POLICY_TRIGGERED:
                 resamples += 1
-    return {"calls": calls, "tokens": tin + tout, "saved": frontier_saved(tin, tout),
-            "resamples": resamples}
+    return {
+        "calls": calls,
+        "tokens": tin + tout,
+        "saved": frontier_saved(tin, tout),
+        "resamples": resamples,
+    }
 
 
 def cmd_cost(args) -> None:
     from ..tui.render import _money
+
     st = _aggregate_stats(EventLog(args.db))
-    print(f"$0.00 spent  ·  ~{_money(st['saved'])} the same {st['tokens']:,} tokens would cost "
-          f"on a frontier API  ·  {st['calls']} call(s)")
+    print(
+        f"$0.00 spent  ·  ~{_money(st['saved'])} the same {st['tokens']:,} tokens would cost "
+        f"on a frontier API  ·  {st['calls']} call(s)"
+    )
 
 
 def cmd_usage(args) -> None:
     from ..tui.render import _money
+
     st = _aggregate_stats(EventLog(args.db))
     print(f"  calls      {st['calls']}")
     print(f"  tokens     {st['tokens']:,}")
@@ -444,6 +553,7 @@ def cmd_usage(args) -> None:
 
 def cmd_export(args) -> None:
     from ..events.export import transcript_markdown
+
     log = EventLog(args.db)
     run_id = args.run_id
     if not run_id:
@@ -473,15 +583,21 @@ def cmd_rewind(args) -> None:
         points = log.rewind_points(args.run_id)
         if not points:
             raise SystemExit("nothing to rewind in this run yet")
-        print(f"rewind points for {args.run_id[:8]} (use: harness rewind {args.run_id} --seq <N>):")
+        print(
+            f"rewind points for {args.run_id[:8]} (use: lo rewind {args.run_id} --seq <N>):"
+        )
         for seq, kind, preview in points:
-            label = "the original answer" if kind == "answer" else f"follow-up: {preview}"
+            label = (
+                "the original answer" if kind == "answer" else f"follow-up: {preview}"
+            )
             print(f"  seq {seq:>3}  ✂ {label}")
         return
     archive_id = log.rewind(args.run_id, args.seq)
     if archive_id is None:
         raise SystemExit(f"nothing at or after seq {args.seq}")
-    print(f"rewound {args.run_id[:8]} to before seq {args.seq}; tail archived as {archive_id}")
+    print(
+        f"rewound {args.run_id[:8]} to before seq {args.seq}; tail archived as {archive_id}"
+    )
 
 
 async def cmd_context(args) -> None:
@@ -513,7 +629,7 @@ async def cmd_context(args) -> None:
 
 
 def _build_session_app(args, sandbox, *, interactive_permissions: bool = False):
-    """Construct the session-server Starlette app + manager, shared by `harness
+    """Construct the session-server Starlette app + manager, shared by `lo
     serve` and the TUI's embedded server. Startup probes the upstream resiliently
     (a failed probe leaves /health degraded rather than crashing the server).
     `interactive_permissions` routes the ask tier to the client over the bus."""
@@ -528,7 +644,7 @@ def _build_session_app(args, sandbox, *, interactive_permissions: bool = False):
     from ..agent.presets import get_preset
 
     async def _auto_allow(_tool, _args):  # server has no interactive client yet:
-        return True                       # auto-approve the ask tier (deny still denies)
+        return True  # auto-approve the ask tier (deny still denies)
 
     def factory(on_token, on_tool, on_notice, preset=None):
         # Apply the per-session preset so plan/explore are actually enforced
@@ -539,14 +655,24 @@ def _build_session_app(args, sandbox, *, interactive_permissions: bool = False):
         p = get_preset(preset or getattr(args, "preset", "build"))
         tools = ToolRegistry(builtin_tools(sandbox=sandbox))
         tools.permissions = p.permissions(approver=_auto_allow)
-        return Agent(state["client"], tools, log, capabilities=state["caps"],
-                     system_prompt=p.system_prompt, sampling=p.sampling,
-                     exposed_tools=p.exposed(), max_steps=args.max_steps,
-                     guardrails_factory=_guardrails_factory(args, tools),
-                     context_budget=args.context_budget,
-                     compact_fraction=getattr(args, "compact_fraction", 0.85),
-                     code_mode=getattr(args, "code_mode", True), sandbox=sandbox,
-                     on_token=on_token, on_tool=on_tool, on_notice=on_notice)
+        return Agent(
+            state["client"],
+            tools,
+            log,
+            capabilities=state["caps"],
+            system_prompt=p.system_prompt,
+            sampling=p.sampling,
+            exposed_tools=p.exposed(),
+            max_steps=args.max_steps,
+            guardrails_factory=_guardrails_factory(args, tools),
+            context_budget=args.context_budget,
+            compact_fraction=getattr(args, "compact_fraction", 0.85),
+            code_mode=getattr(args, "code_mode", True),
+            sandbox=sandbox,
+            on_token=on_token,
+            on_tool=on_tool,
+            on_notice=on_notice,
+        )
 
     async def startup():
         try:
@@ -558,18 +684,23 @@ def _build_session_app(args, sandbox, *, interactive_permissions: bool = False):
 
     def health():
         caps = state.get("caps")
-        return {"status": "ok" if caps else "degraded", "upstream": args.url,
-                "model": state["client"].model if state.get("client") else args.model,
-                "capabilities": caps.to_dict() if caps else None,
-                "error": state.get("error")}
+        return {
+            "status": "ok" if caps else "degraded",
+            "upstream": args.url,
+            "model": state["client"].model if state.get("client") else args.model,
+            "capabilities": caps.to_dict() if caps else None,
+            "error": state.get("error"),
+        }
 
-    manager = SessionManager(bus, factory, interactive_permissions=interactive_permissions)
+    manager = SessionManager(
+        bus, factory, interactive_permissions=interactive_permissions
+    )
     return create_server_app(manager, health=health, on_startup=startup)
 
 
 def cmd_serve(args) -> None:
     """Headless session server — the OpenCode-style bus over HTTP+SSE. Clients
-    (the TUI, `harness tail`, a future web view) all observe one live session."""
+    (the TUI, `lo tail`, a future web view) all observe one live session."""
     import os
     import uvicorn
 
@@ -581,13 +712,19 @@ def cmd_serve(args) -> None:
         raise SystemExit(f"✗ {e}")
 
     app = _build_session_app(
-        args, sandbox, interactive_permissions=getattr(args, "approval", "auto") == "prompt")
-    print(f"harness serve: http://{args.host}:{args.port}  (open it in a browser for the web client)")
+        args,
+        sandbox,
+        interactive_permissions=getattr(args, "approval", "auto") == "prompt",
+    )
+    print(
+        f"lo serve: http://{args.host}:{args.port}  (open it in a browser for the web client)"
+    )
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
 def _free_port() -> int:
     import socket
+
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -596,8 +733,8 @@ def _free_port() -> int:
 
 
 def _start_embedded_server(args):
-    """Start a `harness serve` in a daemon thread on localhost; return
-    (url, server). The TUI connects to it as a client — so `harness tui` is the
+    """Start a `lo serve` in a daemon thread on localhost; return
+    (url, server). The TUI connects to it as a client — so `lo tui` is the
     OpenCode-style client/server architecture out of the box, no separate process,
     and the same session is tail-able from another terminal."""
     import os
@@ -617,7 +754,8 @@ def _start_embedded_server(args):
     # The TUI's embedded server prompts for the ask tier through the bus (so the
     # PermissionModal works in server mode too), unless the user passed --allow-all.
     app = _build_session_app(
-        args, sandbox, interactive_permissions=not getattr(args, "allow_all", False))
+        args, sandbox, interactive_permissions=not getattr(args, "allow_all", False)
+    )
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
     # uvicorn skips signal handlers off the main thread automatically.
@@ -630,7 +768,7 @@ def _start_embedded_server(args):
 
 
 def cmd_tail(args) -> None:
-    """Follow a session's live event stream from a running `harness serve` — a
+    """Follow a session's live event stream from a running `lo serve` — a
     thin read-only client, proving many clients can observe one session."""
     import httpx
 
@@ -648,7 +786,9 @@ def cmd_tail(args) -> None:
             if not run_id:
                 raise SystemExit("give a run_id to follow, or --task to start one")
             etype = None
-            async with c.stream("GET", f"{base}/session/{run_id}/events?replay=1&once=1") as resp:
+            async with c.stream(
+                "GET", f"{base}/session/{run_id}/events?replay=1&once=1"
+            ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if line.startswith("event:"):
@@ -668,7 +808,10 @@ def cmd_tail(args) -> None:
             if payload.get("phase") == "start":
                 print(f"\n  ⚙ {payload.get('name')}…", flush=True)
         elif etype == "tool_call":
-            print(f"\n  ↳ {payload.get('name')} → {str(payload.get('result'))[:80]}", flush=True)
+            print(
+                f"\n  ↳ {payload.get('name')} → {str(payload.get('result'))[:80]}",
+                flush=True,
+            )
         elif etype == "run_completed":
             print(f"\n✓ {payload.get('answer', '')[:200]}", flush=True)
         elif etype == "run_failed":
@@ -681,6 +824,7 @@ async def _probe_local_servers() -> tuple[str, str, str] | None:
     """Find the first reachable local OpenAI-compatible server, trying the common
     ports. Returns (url, server_name, first_model_id), or None if nothing answers."""
     import httpx
+
     candidates = [
         ("http://localhost:8080", "llama.cpp"),
         ("http://localhost:8000", "vLLM"),
@@ -704,10 +848,14 @@ def cmd_quickstart(args) -> None:
     """Auto-find a local server and drop straight into the TUI against it."""
     found = asyncio.run(_probe_local_servers())
     if found is None:
-        print("no local server found on :8080 (llama.cpp), :8000 (vLLM), "
-              ":1234 (LM Studio), or :11434 (Ollama).")
-        print('start one, then re-run `harness quickstart` — or point at it directly: '
-              'harness run --url <url> "..."')
+        print(
+            "no local server found on :8080 (llama.cpp), :8000 (vLLM), "
+            ":1234 (LM Studio), or :11434 (Ollama)."
+        )
+        print(
+            "start one, then re-run `lo quickstart` — or point at it directly: "
+            'lo run --url <url> "..."'
+        )
         raise SystemExit(1)
     url, name, model = found
     print(f"✓ {name} at {url}  ·  {model}")
@@ -721,30 +869,57 @@ _DAEMON_SESSION = "harness-serve"
 
 
 def cmd_daemon(args) -> None:
-    """Run `harness serve` in a detached tmux session: start/stop/status/logs/attach."""
+    """Run `lo serve` in a detached tmux session: start/stop/status/logs/attach."""
     import shlex
     import shutil
     import subprocess
     import sys
 
     if shutil.which("tmux") is None:
-        raise SystemExit("tmux not found — install tmux, or run `harness serve` directly.")
+        raise SystemExit("tmux not found — install tmux, or run `lo serve` directly.")
     s = _DAEMON_SESSION
-    alive = subprocess.run(["tmux", "has-session", "-t", s], capture_output=True).returncode == 0
+    alive = (
+        subprocess.run(["tmux", "has-session", "-t", s], capture_output=True).returncode
+        == 0
+    )
 
     if args.action == "start":
         if alive:
             print(f"daemon already running (tmux '{s}') — attach: tmux attach -t {s}")
             return
-        cmd = [sys.executable, "-m", "local_harness.cli.main", "serve",
-               "--host", args.host, "--port", str(args.port), "--db", args.db,
-               "--url", args.url, "--approval", args.approval]
+        cmd = [
+            sys.executable,
+            "-m",
+            "local_harness.cli.main",
+            "serve",
+            "--host",
+            args.host,
+            "--port",
+            str(args.port),
+            "--db",
+            args.db,
+            "--url",
+            args.url,
+            "--approval",
+            args.approval,
+        ]
         if args.model:
             cmd += ["--model", args.model]
-        subprocess.run(["tmux", "new-session", "-d", "-s", s,
-                        " ".join(shlex.quote(c) for c in cmd)], check=True)
-        print(f"harness daemon started (tmux '{s}') → http://{args.host}:{args.port}")
-        print(f"  attach: tmux attach -t {s}  ·  logs: harness daemon logs  ·  stop: harness daemon stop")
+        subprocess.run(
+            [
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                s,
+                " ".join(shlex.quote(c) for c in cmd),
+            ],
+            check=True,
+        )
+        print(f"lo daemon started (tmux '{s}') → http://{args.host}:{args.port}")
+        print(
+            f"  attach: tmux attach -t {s}  ·  logs: lo daemon logs  ·  stop: lo daemon stop"
+        )
     elif args.action == "stop":
         r = subprocess.run(["tmux", "kill-session", "-t", s], capture_output=True)
         print("daemon stopped." if r.returncode == 0 else f"no running daemon ('{s}').")
@@ -756,19 +931,24 @@ def cmd_daemon(args) -> None:
         try:
             h = httpx.get(f"http://{args.host}:{args.port}/health", timeout=3).json()
             caps = h.get("capabilities") or {}
-            print(f"  health: {h.get('status')} · model {h.get('model')} · tier {caps.get('tier')}")
+            print(
+                f"  health: {h.get('status')} · model {h.get('model')} · tier {caps.get('tier')}"
+            )
         except Exception as e:  # noqa: BLE001
             print(f"  (server not answering /health yet: {e})")
     elif args.action == "logs":
-        r = subprocess.run(["tmux", "capture-pane", "-t", s, "-p", "-S", "-200"],
-                           capture_output=True, text=True)
+        r = subprocess.run(
+            ["tmux", "capture-pane", "-t", s, "-p", "-S", "-200"],
+            capture_output=True,
+            text=True,
+        )
         print(r.stdout if r.returncode == 0 else f"no running daemon ('{s}').")
     elif args.action == "attach":
         print(f"run:  tmux attach -t {s}")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="harness")
+    parser = argparse.ArgumentParser(prog="lo")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("quickstart", help="auto-find a local server and launch the TUI")
@@ -784,13 +964,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     p.add_argument("--json", action="store_true")
 
-    p = sub.add_parser("bench", help="measure the harness's advantages vs frontier APIs")
+    p = sub.add_parser("bench", help="measure lo-agent's advantages vs frontier APIs")
     _add_common(p)
     p.add_argument("--skills-dir", default="skills")
     p.add_argument("--n", type=int, default=8, help="samples per bench (default 8)")
-    p.add_argument("--no-batch-invariance", action="store_true",
-                   help="skip the batch-invariance bench (it issues concurrent load; "
-                        "skip it on a shared/busy server)")
+    p.add_argument(
+        "--no-batch-invariance",
+        action="store_true",
+        help="skip the batch-invariance bench (it issues concurrent load; "
+        "skip it on a shared/busy server)",
+    )
 
     p = sub.add_parser("sandbox", help="install / check the microVM tool sandbox")
     p.add_argument("action", nargs="?", choices=["doctor", "install"], default="doctor")
@@ -800,22 +983,46 @@ def build_parser() -> argparse.ArgumentParser:
 
     def _add_agent_flags(p):
         p.add_argument("--max-steps", type=int, default=20)
-        p.add_argument("--required-steps", help="comma-separated tools that must run before finishing")
-        p.add_argument("--terminal-tool", help="comma-separated tools that may end the workflow")
-        p.add_argument("--no-guardrails", action="store_true",
-                       help="disable rescue parsing, nudges, and step enforcement")
-        p.add_argument("--context-budget", type=int, default=None,
-                       help="approx token budget that triggers compaction; overrides the "
-                            "auto budget derived from the model's context window")
-        p.add_argument("--compact-fraction", type=float, default=0.85,
-                       help="auto-compact trigger as a fraction of the probed context window "
-                            "(default 0.85); ignored if --context-budget is given")
-        p.add_argument("--sandbox", default="host", choices=["host", "microvm"],
-                       help="run bash inside a microVM (workdir mounted, host isolated); "
-                            "default host (unsandboxed). 'microvm' needs: harness sandbox install")
-        p.add_argument("--no-code-mode", dest="code_mode", action="store_false",
-                       help="disable code-mode (default on): use classic per-tool calling "
-                            "instead of having the model write code that calls tools")
+        p.add_argument(
+            "--required-steps",
+            help="comma-separated tools that must run before finishing",
+        )
+        p.add_argument(
+            "--terminal-tool", help="comma-separated tools that may end the workflow"
+        )
+        p.add_argument(
+            "--no-guardrails",
+            action="store_true",
+            help="disable rescue parsing, nudges, and step enforcement",
+        )
+        p.add_argument(
+            "--context-budget",
+            type=int,
+            default=None,
+            help="approx token budget that triggers compaction; overrides the "
+            "auto budget derived from the model's context window",
+        )
+        p.add_argument(
+            "--compact-fraction",
+            type=float,
+            default=0.85,
+            help="auto-compact trigger as a fraction of the probed context window "
+            "(default 0.85); ignored if --context-budget is given",
+        )
+        p.add_argument(
+            "--sandbox",
+            default="host",
+            choices=["host", "microvm"],
+            help="run bash inside a microVM (workdir mounted, host isolated); "
+            "default host (unsandboxed). 'microvm' needs: lo sandbox install",
+        )
+        p.add_argument(
+            "--no-code-mode",
+            dest="code_mode",
+            action="store_false",
+            help="disable code-mode (default on): use classic per-tool calling "
+            "instead of having the model write code that calls tools",
+        )
         p.set_defaults(code_mode=True)
 
     p = sub.add_parser("run", help="run an agent task")
@@ -832,116 +1039,202 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     _add_agent_flags(p)
     p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS", "skills"))
-    p.add_argument("--tools", default=os.environ.get("HARNESS_TOOLS", "tools.json"),
-                   help="JSON config of UTCP manuals / MCP servers to load")
-    p.add_argument("--resample-threshold", type=float, default=None,
-                   help="resample (ghost-retype) when mean logprob falls below this, e.g. -1.2")
-    p.add_argument("--memory-dir", default=os.environ.get("HARNESS_MEMORY_DIR", ".harness/memory"),
-                   help="dir for self-editing memory (MEMORY.md / USER.md)")
-    p.add_argument("--allow-all", action="store_true",
-                   help="skip tool-permission prompts (allow every tool)")
-    p.add_argument("--preset", default="build",
-                   help="agent preset: build | plan | explore | general")
-    p.add_argument("--background", action="store_true",
-                   help="overnight apprentice: learn (consolidate/reflect/skills) after each idle run")
-    p.add_argument("--server", default=None,
-                   help="connect to an EXISTING `harness serve` at this URL instead of "
-                        "starting an embedded one")
-    p.add_argument("--port", type=int, default=None,
-                   help="port for the embedded server (default: a free port)")
-    p.add_argument("--in-process", action="store_true",
-                   help="escape hatch: drive the agent in-process (the pre-server path) "
-                        "instead of starting/using a session server")
+    p.add_argument(
+        "--tools",
+        default=os.environ.get("HARNESS_TOOLS", "tools.json"),
+        help="JSON config of UTCP manuals / MCP servers to load",
+    )
+    p.add_argument(
+        "--resample-threshold",
+        type=float,
+        default=None,
+        help="resample (ghost-retype) when mean logprob falls below this, e.g. -1.2",
+    )
+    p.add_argument(
+        "--memory-dir",
+        default=os.environ.get("HARNESS_MEMORY_DIR", ".harness/memory"),
+        help="dir for self-editing memory (MEMORY.md / USER.md)",
+    )
+    p.add_argument(
+        "--allow-all",
+        action="store_true",
+        help="skip tool-permission prompts (allow every tool)",
+    )
+    p.add_argument(
+        "--preset",
+        default="build",
+        help="agent preset: build | plan | explore | general",
+    )
+    p.add_argument(
+        "--background",
+        action="store_true",
+        help="overnight apprentice: learn (consolidate/reflect/skills) after each idle run",
+    )
+    p.add_argument(
+        "--server",
+        default=None,
+        help="connect to an EXISTING `lo serve` at this URL instead of "
+        "starting an embedded one",
+    )
+    p.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="port for the embedded server (default: a free port)",
+    )
+    p.add_argument(
+        "--in-process",
+        action="store_true",
+        help="escape hatch: drive the agent in-process (the pre-server path) "
+        "instead of starting/using a session server",
+    )
 
-    p = sub.add_parser("serve", help="headless session server (OpenCode-style bus over HTTP+SSE)")
+    p = sub.add_parser(
+        "serve", help="headless session server (OpenCode-style bus over HTTP+SSE)"
+    )
     _add_common(p)
     _add_agent_flags(p)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8099)
-    p.add_argument("--preset", default="build",
-                   help="default agent preset when a session request omits one "
-                        "(build | plan | explore | general)")
-    p.add_argument("--approval", default="auto", choices=["auto", "prompt"],
-                   help="ask-tier tools: 'auto' approves them (headless), 'prompt' asks the "
-                        "connected client over the bus (default auto)")
+    p.add_argument(
+        "--preset",
+        default="build",
+        help="default agent preset when a session request omits one "
+        "(build | plan | explore | general)",
+    )
+    p.add_argument(
+        "--approval",
+        default="auto",
+        choices=["auto", "prompt"],
+        help="ask-tier tools: 'auto' approves them (headless), 'prompt' asks the "
+        "connected client over the bus (default auto)",
+    )
 
-    p = sub.add_parser("tail", help="follow a session's live stream from a running `harness serve`")
-    p.add_argument("run_id", nargs="?", help="run to follow (omit with --task to start a new one)")
-    p.add_argument("--server", default="http://127.0.0.1:8099", help="harness serve URL")
+    p = sub.add_parser(
+        "tail", help="follow a session's live stream from a running `lo serve`"
+    )
+    p.add_argument(
+        "run_id", nargs="?", help="run to follow (omit with --task to start a new one)"
+    )
+    p.add_argument("--server", default="http://127.0.0.1:8099", help="lo serve URL")
     p.add_argument("--task", help="start a new session with this task and follow it")
 
-    p = sub.add_parser("replay", help="re-issue a run's model calls and verify determinism")
+    p = sub.add_parser(
+        "replay", help="re-issue a run's model calls and verify determinism"
+    )
     _add_common(p)
     p.add_argument("run_id")
 
-    p = sub.add_parser("replay-tuned",
-                       help="counterfactual replay: re-run a step under a grammar or optimized prompt")
+    p = sub.add_parser(
+        "replay-tuned",
+        help="counterfactual replay: re-run a step under a grammar or optimized prompt",
+    )
     _add_common(p)
     p.add_argument("run_id")
     p.add_argument("--skill", help="grammar/guidance skill to constrain the answer")
-    p.add_argument("--instruction", help="override/optimized system instruction (prompt-opt)")
-    p.add_argument("--fork", type=int, default=None,
-                   help="model-call index to fork at (default: the last/answer call)")
+    p.add_argument(
+        "--instruction", help="override/optimized system instruction (prompt-opt)"
+    )
+    p.add_argument(
+        "--fork",
+        type=int,
+        default=None,
+        help="model-call index to fork at (default: the last/answer call)",
+    )
     p.add_argument("--seed", type=int, default=None, help="override the seed")
     p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS", "skills"))
 
     p = sub.add_parser("runs", help="list runs in the event log")
     _add_common(p)
 
-    p = sub.add_parser("context", help="show a run's context-window usage (token breakdown)")
+    p = sub.add_parser(
+        "context", help="show a run's context-window usage (token breakdown)"
+    )
     _add_common(p)
-    p.add_argument("run_id", nargs="?", help="run to inspect (default: the most recent)")
+    p.add_argument(
+        "run_id", nargs="?", help="run to inspect (default: the most recent)"
+    )
 
-    p = sub.add_parser("rewind", help="roll a run back to an earlier point (lossless; tail archived)")
+    p = sub.add_parser(
+        "rewind", help="roll a run back to an earlier point (lossless; tail archived)"
+    )
     p.add_argument("--db", default=os.environ.get("HARNESS_DB", "harness.db"))
     p.add_argument("run_id")
-    p.add_argument("--seq", type=int, default=None,
-                   help="remove events at/after this seq (omit to list the rewind points)")
+    p.add_argument(
+        "--seq",
+        type=int,
+        default=None,
+        help="remove events at/after this seq (omit to list the rewind points)",
+    )
 
     p = sub.add_parser("cost", help="$ saved vs a frontier API across logged runs")
     p.add_argument("--db", default=os.environ.get("HARNESS_DB", "harness.db"))
 
-    p = sub.add_parser("usage", help="token / cost / resample summary across logged runs")
+    p = sub.add_parser(
+        "usage", help="token / cost / resample summary across logged runs"
+    )
     p.add_argument("--db", default=os.environ.get("HARNESS_DB", "harness.db"))
 
     p = sub.add_parser("export", help="write a run's transcript to run-<id>.md")
     p.add_argument("--db", default=os.environ.get("HARNESS_DB", "harness.db"))
     p.add_argument("run_id", nargs="?", help="run to export (default: the most recent)")
-    p.add_argument("--stdout", action="store_true", help="print Markdown to stdout instead of a file")
+    p.add_argument(
+        "--stdout",
+        action="store_true",
+        help="print Markdown to stdout instead of a file",
+    )
 
-    p = sub.add_parser("skill", help="generate with a grammar skill ('skill list' to enumerate)")
+    p = sub.add_parser(
+        "skill", help="generate with a grammar skill ('skill list' to enumerate)"
+    )
     _add_common(p)
     p.add_argument("skill_name")
     p.add_argument("prompt", nargs="?", default="")
     p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS", "skills"))
     p.add_argument("--seed", type=int, default=1)
 
-    p = sub.add_parser("background", help="run background cognition once: consolidate, reflect, induce")
+    p = sub.add_parser(
+        "background", help="run background cognition once: consolidate, reflect, induce"
+    )
     _add_common(p)
     p.add_argument("--memory-db", default=os.environ.get("HARNESS_MEMORY", "memory.db"))
     p.add_argument("--drafts-dir", default="skills/drafts")
     p.add_argument("--limit", type=int, default=10)
-    p.add_argument("--min-agreement", type=float, default=0.5,
-                   help="keep a lesson only if at least this fraction of resamples agree "
-                        "on it (sample-consistency gate; default 0.5)")
-    p.add_argument("--autonomous-actions", action="store_true",
-                   help="also draft PROPOSED next actions for stalled runs (never executed; "
-                        "written to the drafts dir for human review)")
+    p.add_argument(
+        "--min-agreement",
+        type=float,
+        default=0.5,
+        help="keep a lesson only if at least this fraction of resamples agree "
+        "on it (sample-consistency gate; default 0.5)",
+    )
+    p.add_argument(
+        "--autonomous-actions",
+        action="store_true",
+        help="also draft PROPOSED next actions for stalled runs (never executed; "
+        "written to the drafts dir for human review)",
+    )
 
     p = sub.add_parser("recall", help="query the FTS5 memory")
     p.add_argument("query")
     p.add_argument("--memory-db", default=os.environ.get("HARNESS_MEMORY", "memory.db"))
 
-    p = sub.add_parser("proxy", help="guardrails + logit-pipeline proxy (OpenAI + Anthropic APIs)")
-    p.add_argument("--url", default=os.environ.get("HARNESS_BASE_URL", "http://localhost:8080"),
-                   help="upstream model server")
+    p = sub.add_parser(
+        "proxy", help="guardrails + logit-pipeline proxy (OpenAI + Anthropic APIs)"
+    )
+    p.add_argument(
+        "--url",
+        default=os.environ.get("HARNESS_BASE_URL", "http://localhost:8080"),
+        help="upstream model server",
+    )
     p.add_argument("--model", default=os.environ.get("HARNESS_MODEL", ""))
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8088)
     p.add_argument("--db", default="proxy.db")
     p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS", "skills"))
     p.add_argument("--skill", help="default grammar skill applied to every request")
-    p.add_argument("--samplers", help='JSON sampler settings, e.g. \'{"min_p": 0.05, "dry": {}}\'')
+    p.add_argument(
+        "--samplers", help='JSON sampler settings, e.g. \'{"min_p": 0.05, "dry": {}}\''
+    )
     p.add_argument("--bias-profile")
     p.add_argument("--banned-phrases", help="comma-separated anti-slop phrase list")
     p.add_argument("--think-budget", type=int)
@@ -988,8 +1281,10 @@ def main() -> None:
             handler(args)
     except httpx.ConnectError:
         url = getattr(args, "url", "the server")
-        raise SystemExit(f"✗ can't reach {url} — is the server running? "
-                         "Check --url / HARNESS_BASE_URL.")
+        raise SystemExit(
+            f"✗ can't reach {url} — is the server running? "
+            "Check --url / HARNESS_BASE_URL."
+        )
     except httpx.HTTPError as e:
         raise SystemExit(f"✗ server error: {type(e).__name__}: {e}")
 
