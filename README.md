@@ -8,6 +8,47 @@ free-tokens compute scaling.
 Plan: `thoughts/shared/plans/2026-06-12-local-llm-agent-harness-v2.md`
 Status: **all five phases implemented.**
 
+## Installation
+
+### uv (recommended)
+
+```bash
+uv tool install "git+https://github.com/IMJONEZZ/lo-agent"
+```
+
+### Homebrew
+
+```bash
+brew tap IMJONEZZ/lo-agent
+brew install lo-agent
+```
+
+### Build from source
+
+```bash
+git clone https://github.com/IMJONEZZ/lo-agent
+cd lo-agent
+uv pip install -e .
+```
+
+## Quickstart
+
+```bash
+# Probe your server's capabilities
+harness probe --url http://localhost:8080
+
+# Run an agent task
+harness run "Use the calculator tool to compute 17*23 plus 100."
+
+# Start the TUI
+harness tui
+
+# Start the proxy (OpenAI + Anthropic compatible)
+harness proxy --url http://localhost:8080 --port 8088
+```
+
+See the [Usage](#usage) section below for the full command reference.
+
 1. Substrate — client, capability prober, event log, bit-identical replay, crash resume
 2. Spec-driven skills (grammar IR → GBNF/Lark/JSON-schema/validate-retry), logit
    pipeline (sampler zoo, bias profiles, think-budget forcing), logprob signals + step policies
