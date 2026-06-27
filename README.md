@@ -5,9 +5,6 @@ frontier APIs: determinism & exact replay, spec-driven grammar skills, a token-l
 logit pipeline, uncertainty-aware control flow, KV-cache-aware tree search, and
 free-tokens compute scaling.
 
-Plan: `thoughts/shared/plans/2026-06-12-local-llm-agent-harness-v2.md`
-Status: **all five phases implemented.**
-
 ## Installation
 
 ### uv (recommended)
