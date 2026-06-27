@@ -3,7 +3,7 @@ harness's advantages surfaced as inline badges, live token streaming, and a
 working indicator that sits where the next output appears.
 
 Committed turns live in a RichLog (read from the event log, so runs from
-`harness run` or the proxy stream in too). The in-progress turn renders live in
+`lo run` or the proxy stream in too). The in-progress turn renders live in
 a Static beneath it, fed token-by-token from the agent's on_token callback.
 
 A persistent status bar (OpenCode-style) sits above the input and always shows
@@ -190,7 +190,7 @@ _ADVANTAGE_NAMES = frozenset(
 
 
 def _caps_from_health(health: dict) -> Capabilities | None:
-    """Reconstruct Capabilities from a `harness serve` /health payload so the
+    """Reconstruct Capabilities from a `lo serve` /health payload so the
     status bar / banner show the server's real tier and feature flags."""
     caps_d = (health or {}).get("capabilities") or {}
     fields = {f.name for f in dataclasses.fields(Capabilities)}
@@ -591,7 +591,7 @@ class HarnessApp(App):
         super().__init__()
         from ..agent.presets import get_preset
 
-        # When set, this TUI is a thin CLIENT of a `harness serve` instance: it
+        # When set, this TUI is a thin CLIENT of a `lo serve` instance: it
         # POSTs sessions to the server and renders the SSE event stream, instead
         # of building and driving an Agent in-process. The default (None) is the
         # original in-process path (kept as the --in-process escape hatch).
@@ -895,7 +895,7 @@ class HarnessApp(App):
     # --- server (--server) client mode -----------------------------------
 
     async def _probe_server(self, auto_connect_on_fail: bool = False) -> None:
-        """Connect to a `harness serve` instance: read capabilities from /health,
+        """Connect to a `lo serve` instance: read capabilities from /health,
         skip all in-process agent infra (the server owns tools/sandbox/memory).
         The server's own upstream probe may still be running (≈30s on a 27B), so
         poll /health until capabilities land before declaring ready."""
@@ -915,7 +915,7 @@ class HarnessApp(App):
             self.sub_title = f"can't reach server {self.server}: {e}"
             self._set_banner_title(f"local_harness  ·  can't reach {self.server}")
             self.notify(
-                f"can't reach harness serve at {self.server}: {e}",
+                f"can't reach lo serve at {self.server}: {e}",
                 severity="error",
                 timeout=10,
             )

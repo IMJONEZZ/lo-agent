@@ -40,7 +40,9 @@ class Capabilities:
     banned_strings: bool = False
     kv_snapshot: bool = False
     parallel_n: bool = False
-    stream_logprobs: bool = False  # logprobs in a streamed tool-call request (vLLM yes, llama.cpp no)
+    stream_logprobs: bool = (
+        False  # logprobs in a streamed tool-call request (vLLM yes, llama.cpp no)
+    )
     responses_api: bool = False  # /v1/responses with logprobs (e.g. LM Studio)
     logprobs_via_responses: bool = False  # logprobs come from /v1/responses, not chat
     in_process: bool = False  # Tier 4, native backend only (Phase 5)
@@ -51,7 +53,7 @@ class Capabilities:
     # locks its auto-compaction trigger at a fraction of this. None = unknown.
     context_window: int | None = None
     # Determinism UNDER CONCURRENT LOAD (Thinking Machines 2025). None = not
-    # probed (the probe generates real load, so it's opt-in via `harness bench`,
+    # probed (the probe generates real load, so it's opt-in via `lo bench`,
     # never run at connect-time). True/False once probed.
     batch_invariant: bool | None = None
 
@@ -93,7 +95,11 @@ class Capabilities:
             f"lora (hot-swap): {self.lora_mode or 'none'}"
             + (f" · {len(self.lora_adapters)} preloaded" if self.lora_adapters else ""),
             f"context window:  {self.context_window or 'unknown'}"
-            + (f" (auto-compact at {int(self.context_window * 0.85):,})" if self.context_window else ""),
+            + (
+                f" (auto-compact at {int(self.context_window * 0.85):,})"
+                if self.context_window
+                else ""
+            ),
             f"batch-invariant: {'unprobed' if self.batch_invariant is None else self.batch_invariant}",
         ]
         return "\n".join(lines)
@@ -139,7 +145,12 @@ def detect_context_window(fp: Fingerprint) -> int | None:
         if isinstance(v, int) and v > 0:
             return v
     card = fp.model_card or {}
-    for key in ("max_model_len", "context_length", "max_context_length", "context_window"):
+    for key in (
+        "max_model_len",
+        "context_length",
+        "max_context_length",
+        "context_window",
+    ):
         v = card.get(key)
         if isinstance(v, int) and v > 0:
             return v
@@ -148,7 +159,9 @@ def detect_context_window(fp: Fingerprint) -> int | None:
 
 def _probe_request(seed: int) -> GenerationRequest:
     return GenerationRequest(
-        messages=[Message(role="user", content="Reply with one short sentence about rivers.")],
+        messages=[
+            Message(role="user", content="Reply with one short sentence about rivers.")
+        ],
         sampling=SamplingParams(
             temperature=1.0, max_tokens=16, seed=seed, logprobs=True, top_logprobs=2
         ),
@@ -204,11 +217,16 @@ async def probe(client: OpenAICompatClient) -> Capabilities:
     chat_logprobs = caps.logprobs
     if not chat_logprobs:
         try:
-            r = await client.post("/v1/responses", json={
-                "model": client.model, "input": "Reply with one short word.",
-                "max_output_tokens": 512,
-                "include": ["message.output_text.logprobs"], "top_logprobs": 2,
-            })
+            r = await client.post(
+                "/v1/responses",
+                json={
+                    "model": client.model,
+                    "input": "Reply with one short word.",
+                    "max_output_tokens": 512,
+                    "include": ["message.output_text.logprobs"],
+                    "top_logprobs": 2,
+                },
+            )
             if r.status_code == 200:
                 caps.responses_api = True
                 # LM Studio serves /v1/responses; pure llama.cpp does not. LM Studio
@@ -226,6 +244,7 @@ async def probe(client: OpenAICompatClient) -> Capabilities:
     # Hot-swappable LoRA adapters (skills-as-adapters): vLLM serves them as model
     # names + runtime-loadable; llama.cpp exposes its preloaded set at /lora-adapters.
     from .lora import probe_lora
+
     await probe_lora(client, caps)
 
     return caps
@@ -262,7 +281,10 @@ def _batch_target(seed: int) -> GenerationRequest:
 
 
 async def probe_batch_invariance(
-    client: OpenAICompatClient, caps: Capabilities, *, concurrency: int = 7,
+    client: OpenAICompatClient,
+    caps: Capabilities,
+    *,
+    concurrency: int = 7,
     seed: int = PROBE_SEED,
 ) -> bool | None:
     """Determinism UNDER CONCURRENT LOAD — the audit-grade reproducibility claim.
@@ -278,14 +300,16 @@ async def probe_batch_invariance(
     and returns `caps.batch_invariant`; returns None (leaves it unprobed) if the
     server has no seed or a request errored.
 
-    GENERATES REAL CONCURRENT LOAD — opt-in only (`harness bench`), never part of
+    GENERATES REAL CONCURRENT LOAD — opt-in only (`lo bench`), never part of
     the connect-time probe, so it can't slam a shared server unasked.
     """
     if not caps.seed:
         return None
     target = _batch_target(seed)
     try:
-        baseline = canonical_text((await client.chat(target)).raw["choices"][0]["message"])
+        baseline = canonical_text(
+            (await client.chat(target)).raw["choices"][0]["message"]
+        )
     except httpx.HTTPError:
         return None
     decoys = [
@@ -293,7 +317,7 @@ async def probe_batch_invariance(
             messages=[Message(role="user", content=prompt)],
             sampling=SamplingParams(temperature=1.0, max_tokens=mt),
         )
-        for prompt, mt in _BATCH_DECOYS[:max(0, concurrency)]
+        for prompt, mt in _BATCH_DECOYS[: max(0, concurrency)]
     ]
     results = await asyncio.gather(
         client.chat(_batch_target(seed)),

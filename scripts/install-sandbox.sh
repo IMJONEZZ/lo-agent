@@ -99,4 +99,4 @@ PY
   fi
 fi
 
-ok "Done. Run the harness sandboxed with:  harness run --sandbox microvm  (once the backend lands)"
+ok "Done. Run the harness sandboxed with:  lo run --sandbox microvm  (once the backend lands)"

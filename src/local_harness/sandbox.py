@@ -26,8 +26,8 @@ import warnings
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-VM_ROOT = "/workspace"        # where the workdir is mounted inside the microVM
-DEFAULT_IMAGE = "python"      # debian-based: has /bin/bash + coreutils
+VM_ROOT = "/workspace"  # where the workdir is mounted inside the microVM
+DEFAULT_IMAGE = "python"  # debian-based: has /bin/bash + coreutils
 
 
 class SandboxUnavailable(RuntimeError):
@@ -72,8 +72,13 @@ class HostSandbox(Sandbox):
 
     async def exec(self, command: str, timeout: int = 30) -> tuple[str, int]:
         proc = await asyncio.create_subprocess_exec(
-            "bash", "-lc", command, cwd=self.workdir,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            "bash",
+            "-lc",
+            command,
+            cwd=self.workdir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
         try:
             out, _ = await asyncio.wait_for(proc.communicate(), timeout)
         except asyncio.TimeoutError:
@@ -108,8 +113,14 @@ class MicrosandboxSandbox(Sandbox):
 
     kind = "microvm"
 
-    def __init__(self, workdir: str | os.PathLike, *, image: str = DEFAULT_IMAGE,
-                 cpus: int = 1, memory: int = 1024):
+    def __init__(
+        self,
+        workdir: str | os.PathLike,
+        *,
+        image: str = DEFAULT_IMAGE,
+        cpus: int = 1,
+        memory: int = 1024,
+    ):
         super().__init__(workdir)
         self.image, self.cpus, self.memory = image, cpus, memory
         self._sb = None
@@ -120,19 +131,26 @@ class MicrosandboxSandbox(Sandbox):
     async def _ensure(self):
         if self._sb is None:
             from microsandbox import Sandbox as MS, Volume
+
             try:
                 await MS.remove(self._name)  # clear a stale sandbox of the same name
             except Exception:
                 pass
             self._sb = await MS.create(
-                self._name, image=self.image, cpus=self.cpus, memory=self.memory,
-                volumes={VM_ROOT: Volume.bind(self.workdir)})
+                self._name,
+                image=self.image,
+                cpus=self.cpus,
+                memory=self.memory,
+                volumes={VM_ROOT: Volume.bind(self.workdir)},
+            )
         return self._sb
 
     async def exec(self, command: str, timeout: int = 30) -> tuple[str, int]:
         try:
             sb = await self._ensure()
-            r = await sb.exec("/bin/bash", ["-lc", command], cwd=VM_ROOT, timeout=timeout)
+            r = await sb.exec(
+                "/bin/bash", ["-lc", command], cwd=VM_ROOT, timeout=timeout
+            )
         except Exception as e:  # surface the real reason; the turn shouldn't crash
             return f"error: sandbox exec failed: {type(e).__name__}: {e}", 1
         out = r.stdout_text
@@ -142,6 +160,7 @@ class MicrosandboxSandbox(Sandbox):
 
     def _vm_path(self, path: str) -> str:
         import posixpath
+
         p = posixpath.normpath(posixpath.join(VM_ROOT, path))
         if p != VM_ROOT and not p.startswith(VM_ROOT + "/"):
             raise ValueError(f"path escapes the sandbox workdir: {path}")
@@ -153,6 +172,7 @@ class MicrosandboxSandbox(Sandbox):
 
     async def write_file(self, path: str, content: str) -> str:
         import posixpath
+
         sb = await self._ensure()
         vmp = self._vm_path(path)
         parent = posixpath.dirname(vmp)
@@ -166,9 +186,12 @@ class MicrosandboxSandbox(Sandbox):
 
     async def list_dir(self, path: str = ".") -> str:
         import posixpath
+
         sb = await self._ensure()
         entries = await sb.fs.list(self._vm_path(path))
-        return "\n".join(sorted(posixpath.basename(e.path) for e in entries)) or "[empty]"
+        return (
+            "\n".join(sorted(posixpath.basename(e.path) for e in entries)) or "[empty]"
+        )
 
     async def aclose(self) -> None:
         if self._sb is not None:
@@ -183,22 +206,27 @@ def microvm_ready() -> tuple[bool, str]:
     """(ready, reason-if-not) for the microVM backend on this host."""
     if os.name == "posix" and not Path("/dev/kvm").exists() and not _is_apple_silicon():
         return False, "no /dev/kvm (enable virtualization) and not macOS Apple Silicon"
-    if shutil.which("msb") is None and not Path.home().joinpath(".microsandbox/bin/msb").exists():
-        return False, "msb runtime not installed — run: harness sandbox install"
+    if (
+        shutil.which("msb") is None
+        and not Path.home().joinpath(".microsandbox/bin/msb").exists()
+    ):
+        return False, "msb runtime not installed — run: lo sandbox install"
     try:
         import microsandbox  # noqa: F401
     except Exception:
-        return False, "microsandbox SDK not installed — run: harness sandbox install"
+        return False, "microsandbox SDK not installed — run: lo sandbox install"
     return True, ""
 
 
 def _is_apple_silicon() -> bool:
     import platform
+
     return platform.system() == "Darwin" and platform.machine() == "arm64"
 
 
-def make_sandbox(kind: str | None, workdir: str | os.PathLike,
-                 *, fail_closed: bool = True, **kw) -> Sandbox:
+def make_sandbox(
+    kind: str | None, workdir: str | os.PathLike, *, fail_closed: bool = True, **kw
+) -> Sandbox:
     """Build a sandbox. `kind` in {None|'host', 'microvm'/'microsandbox'}.
 
     Fail-closed: requesting microvm when it's unavailable raises SandboxUnavailable
@@ -212,7 +240,10 @@ def make_sandbox(kind: str | None, workdir: str | os.PathLike,
             return MicrosandboxSandbox(workdir, **kw)
         if fail_closed:
             raise SandboxUnavailable(
-                f"microVM sandbox requested but unavailable: {why}")
-        warnings.warn(f"microVM sandbox unavailable ({why}); running UNSANDBOXED on host")
+                f"microVM sandbox requested but unavailable: {why}"
+            )
+        warnings.warn(
+            f"microVM sandbox unavailable ({why}); running UNSANDBOXED on host"
+        )
         return HostSandbox(workdir)
     raise ValueError(f"unknown sandbox kind: {kind!r}")

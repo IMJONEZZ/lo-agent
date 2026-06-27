@@ -14,7 +14,9 @@ import httpx
 import pytest
 
 from local_harness.inference.capabilities import (
-    Capabilities, probe_batch_invariance, probe,
+    Capabilities,
+    probe_batch_invariance,
+    probe,
 )
 from local_harness.inference.client import OpenAICompatClient
 from local_harness.inference.types import Message
@@ -23,11 +25,13 @@ from local_harness.signals.semantic_entropy import semantic_entropy, _verdict_ye
 
 # --- 3a: batch invariance -------------------------------------------------
 
+
 class _BatchVariantServer(httpx.AsyncBaseTransport):
     """A server whose output for a fixed seed DRIFTS once other requests have
     been seen — the batch-size-varying-reduction failure mode. The target's
     answer depends on how many calls happened before it, so firing it amid
     decoys changes its output."""
+
     def __init__(self):
         self.calls = 0
 
@@ -40,14 +44,25 @@ class _BatchVariantServer(httpx.AsyncBaseTransport):
         # 'mountains' is the target prompt; its content depends on total load seen
         is_target = "mountains" in json.dumps(body.get("messages", []))
         content = f"target-load-{self.calls}" if is_target else "decoy"
-        return httpx.Response(200, json={
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
-                         "finish_reason": "stop"}], "usage": {}})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {},
+            },
+        )
 
 
 class _BatchInvariantServer(httpx.AsyncBaseTransport):
     """Output for the target is a pure function of its seed — unaffected by any
     concurrent decoys (a single-slot llama.cpp, or vLLM in batch-invariant mode)."""
+
     async def handle_async_request(self, request):
         p = request.url.path
         if p == "/v1/models":
@@ -55,9 +70,19 @@ class _BatchInvariantServer(httpx.AsyncBaseTransport):
         body = json.loads(request.content)
         is_target = "mountains" in json.dumps(body.get("messages", []))
         content = f"seed-{body.get('seed')}" if is_target else "decoy"
-        return httpx.Response(200, json={
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
-                         "finish_reason": "stop"}], "usage": {}})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {},
+            },
+        )
 
 
 async def test_batch_invariance_pass_on_invariant_server():
@@ -84,17 +109,22 @@ async def test_batch_invariance_skips_without_seed():
 async def test_connect_probe_never_sets_batch_invariant():
     """The connect-time probe must NOT run the load-generating batch check."""
     from mocks import MockLlamaCpp
-    client = OpenAICompatClient("http://x", "test-model", transport=MockLlamaCpp().transport())
+
+    client = OpenAICompatClient(
+        "http://x", "test-model", transport=MockLlamaCpp().transport()
+    )
     caps = await probe(client)
-    assert caps.batch_invariant is None  # only `harness bench` probes it
+    assert caps.batch_invariant is None  # only `lo bench` probes it
 
 
 # --- 3b: semantic entropy -------------------------------------------------
+
 
 class _MeaningServer(httpx.AsyncBaseTransport):
     """Serves K samples for the question, then acts as an entailment judge.
     `samples` are returned in order (seeded calls); the judge says yes iff the
     two answers are in the same `meaning_groups` bucket."""
+
     def __init__(self, samples, meaning_groups):
         self._samples = samples
         self._i = 0
@@ -119,24 +149,47 @@ class _MeaningServer(httpx.AsyncBaseTransport):
             a = user.split("Answer A:")[1].split("Answer B:")[0].strip()
             b = user.split("Answer B:")[1].split("Does")[0].strip()
             verdict = "yes" if self._group_of(a) == self._group_of(b) >= 0 else "no"
-            return httpx.Response(200, json={
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": verdict},
-                             "finish_reason": "stop"}], "usage": {}})
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": verdict},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {},
+                },
+            )
         # a sampling call — return the next scripted sample
         s = self._samples[self._i % len(self._samples)]
         self._i += 1
-        return httpx.Response(200, json={
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": s},
-                         "finish_reason": "stop"}], "usage": {}})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": s},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {},
+            },
+        )
 
 
 async def test_semantic_entropy_collapses_same_meaning():
     # three surface forms, ALL meaning 'Paris' → one cluster → entropy 0
-    server = _MeaningServer(["Paris", "It's Paris.", "The answer is Paris"],
-                            meaning_groups=[{"paris"}])
+    server = _MeaningServer(
+        ["Paris", "It's Paris.", "The answer is Paris"], meaning_groups=[{"paris"}]
+    )
     client = OpenAICompatClient("http://x", "m", transport=server)
     caps = Capabilities(server="llama.cpp", seed=True)
-    res = await semantic_entropy(client, caps, [Message(role="user", content="Capital of France?")], n=3)
+    res = await semantic_entropy(
+        client, caps, [Message(role="user", content="Capital of France?")], n=3
+    )
     assert res.n_clusters == 1
     assert res.normalized == 0.0
     assert res.judged is True
@@ -144,25 +197,37 @@ async def test_semantic_entropy_collapses_same_meaning():
 
 async def test_semantic_entropy_separates_distinct_meanings():
     # three genuinely different answers → three clusters → max entropy
-    server = _MeaningServer(["Paris", "London", "Berlin"],
-                            meaning_groups=[{"paris"}, {"london"}, {"berlin"}])
+    server = _MeaningServer(
+        ["Paris", "London", "Berlin"],
+        meaning_groups=[{"paris"}, {"london"}, {"berlin"}],
+    )
     client = OpenAICompatClient("http://x", "m", transport=server)
     caps = Capabilities(server="llama.cpp", seed=True)
-    res = await semantic_entropy(client, caps, [Message(role="user", content="A city?")], n=3)
+    res = await semantic_entropy(
+        client, caps, [Message(role="user", content="A city?")], n=3
+    )
     assert res.n_clusters == 3
     assert res.normalized == pytest.approx(1.0)  # log3 / log3
 
 
 async def test_semantic_entropy_open_exceeds_determinate():
-    determinate = _MeaningServer(["Paris", "Paris", "It is Paris"], meaning_groups=[{"paris"}])
+    determinate = _MeaningServer(
+        ["Paris", "Paris", "It is Paris"], meaning_groups=[{"paris"}]
+    )
     c1 = OpenAICompatClient("http://x", "m", transport=determinate)
     caps = Capabilities(server="llama.cpp", seed=True)
-    det = await semantic_entropy(c1, caps, [Message(role="user", content="Capital of France?")], n=3)
+    det = await semantic_entropy(
+        c1, caps, [Message(role="user", content="Capital of France?")], n=3
+    )
 
-    openq = _MeaningServer(["Cleopatra", "Newton", "Genghis Khan"],
-                           meaning_groups=[{"cleopatra"}, {"newton"}, {"genghis"}])
+    openq = _MeaningServer(
+        ["Cleopatra", "Newton", "Genghis Khan"],
+        meaning_groups=[{"cleopatra"}, {"newton"}, {"genghis"}],
+    )
     c2 = OpenAICompatClient("http://x", "m", transport=openq)
-    opn = await semantic_entropy(c2, caps, [Message(role="user", content="A historical figure?")], n=3)
+    opn = await semantic_entropy(
+        c2, caps, [Message(role="user", content="A historical figure?")], n=3
+    )
     assert opn.normalized > det.normalized
 
 

@@ -242,7 +242,7 @@ def format_report(
     results: list[BenchResult], *, model: str, server: str, tier: int
 ) -> str:
     lines = [
-        "local_harness bench — advantages as measurements",
+        "lo bench — advantages as measurements",
         f"server: {server} · tier {tier} · {model}",
         "",
     ]
