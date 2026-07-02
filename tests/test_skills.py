@@ -1,12 +1,14 @@
-from pathlib import Path
-
 from local_harness.inference.capabilities import Capabilities
 from local_harness.logits.grammar_stage import GrammarStage
 from local_harness.logits.pipeline import LogitPipeline, StageStatus
 from local_harness.logits.samplers import SamplerChain
-from local_harness.skills.skill import SkillRegistry
+from local_harness.skills.skill import (
+    BUILTIN_SKILLS_DIR,
+    SkillNotFound,
+    SkillRegistry,
+)
 
-SKILLS_DIR = Path(__file__).parent.parent / "skills"
+SKILLS_DIR = BUILTIN_SKILLS_DIR
 
 LLAMACPP = Capabilities(server="llama.cpp", seed=True, logprobs=True, grammar="gbnf",
                         logit_bias=True, sampler_zoo={"min_p", "mirostat", "dry", "xtc"})
@@ -75,3 +77,33 @@ def test_pipeline_resolve_merges_and_reports():
     assert plan.status_of("grammar") == StageStatus.NATIVE
     d = plan.to_dict()
     assert {s["stage"] for s in d["stages"]} == {"grammar", "samplers"}
+
+
+def test_default_dir_falls_back_to_builtins(tmp_path, monkeypatch):
+    # from a cwd without a skills/ dir, the packaged builtins load
+    monkeypatch.chdir(tmp_path)
+    reg = SkillRegistry(None)
+    assert {"sql_core", "sql_select", "json_extract", "yes_no"} <= set(reg.names())
+
+
+def test_default_dir_prefers_cwd_skills(tmp_path, monkeypatch):
+    (tmp_path / "skills").mkdir()
+    (tmp_path / "skills" / "local_only.toml").write_text(
+        '[skill]\nname = "local_only"\ndescription = "cwd skill"\n'
+        '[grammar]\nroot = "r"\n[grammar.rules]\nr = \'"ok"\'\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    reg = SkillRegistry(None)
+    assert reg.names() == ["local_only"]
+
+
+def test_unknown_skill_raises_skill_not_found():
+    reg = SkillRegistry(SKILLS_DIR)
+    try:
+        reg.get("ist")
+    except SkillNotFound as e:
+        assert isinstance(e, KeyError)  # two-pass import deferral relies on this
+        assert e.name == "ist"
+        assert "yes_no" in e.available
+    else:
+        raise AssertionError("expected SkillNotFound")

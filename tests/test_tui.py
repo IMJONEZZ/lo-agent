@@ -231,7 +231,9 @@ def seed_old_run(db: str) -> str:
     return run_id
 
 
-SKILLS_DIR = str(__import__("pathlib").Path(__file__).parent.parent / "skills")
+from local_harness.skills.skill import BUILTIN_SKILLS_DIR
+
+SKILLS_DIR = str(BUILTIN_SKILLS_DIR)
 
 
 def make_app(db: str, mock: MockLlamaCpp) -> HarnessApp:

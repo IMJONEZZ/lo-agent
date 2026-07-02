@@ -21,7 +21,7 @@ class ProxyConfig:
     upstream_url: str = "http://localhost:8080"
     model: str = ""                      # default model if client omits one
     db: str = "proxy.db"                 # event log (every proxied call is replayable)
-    skills_dir: str = "skills"
+    skills_dir: str | None = None    # None -> cwd skills/ if present, else builtins
     profiles_dir: str = "profiles"
     # pipeline defaults (per-request `harness` overrides win)
     skill: str | None = None

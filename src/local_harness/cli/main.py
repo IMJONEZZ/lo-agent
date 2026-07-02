@@ -16,6 +16,7 @@ from ..events.log import EventLog, MODEL_CALL, POLICY_TRIGGERED
 from ..events.replay import replay_run
 from ..inference.capabilities import probe
 from ..inference.client import OpenAICompatClient
+from ..skills.skill import SkillNotFound
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
@@ -365,12 +366,19 @@ async def cmd_skill(args) -> None:
 
     registry = SkillRegistry(args.skills_dir)
     if args.skill_name == "list":
-        for name in registry.names():
+        names = registry.names()
+        if not names:
+            print(f"no skills found in {registry.skill_dir}")
+            print(
+                "add .toml skill files there, or point --skills-dir / HARNESS_SKILLS elsewhere"
+            )
+            return
+        for name in names:
             print(f"{name:<20} {registry.get(name).description}")
         return
+    skill = registry.get(args.skill_name)  # validate before touching the network
     async with await _client(args) as client:
         caps = await probe(client)
-        skill = registry.get(args.skill_name)
         result = await generate_with_skill(
             client, caps, skill, args.prompt or "", seed=args.seed
         )
@@ -966,7 +974,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("bench", help="measure lo-agent's advantages vs frontier APIs")
     _add_common(p)
-    p.add_argument("--skills-dir", default="skills")
+    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS"))
     p.add_argument("--n", type=int, default=8, help="samples per bench (default 8)")
     p.add_argument(
         "--no-batch-invariance",
@@ -1038,7 +1046,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("tui", help="interactive TUI: live run viewer + task launcher")
     _add_common(p)
     _add_agent_flags(p)
-    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS", "skills"))
+    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS"))
     p.add_argument(
         "--tools",
         default=os.environ.get("HARNESS_TOOLS", "tools.json"),
@@ -1142,7 +1150,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="model-call index to fork at (default: the last/answer call)",
     )
     p.add_argument("--seed", type=int, default=None, help="override the seed")
-    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS", "skills"))
+    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS"))
 
     p = sub.add_parser("runs", help="list runs in the event log")
     _add_common(p)
@@ -1190,7 +1198,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     p.add_argument("skill_name")
     p.add_argument("prompt", nargs="?", default="")
-    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS", "skills"))
+    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS"))
     p.add_argument("--seed", type=int, default=1)
 
     p = sub.add_parser(
@@ -1230,7 +1238,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8088)
     p.add_argument("--db", default="proxy.db")
-    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS", "skills"))
+    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS"))
     p.add_argument("--skill", help="default grammar skill applied to every request")
     p.add_argument(
         "--samplers", help='JSON sampler settings, e.g. \'{"min_p": 0.05, "dry": {}}\''
@@ -1279,6 +1287,17 @@ def main() -> None:
             asyncio.run(handler(args))
         else:
             handler(args)
+    except SkillNotFound as e:
+        import difflib
+
+        msg = f"✗ unknown skill {e.name!r}"
+        hint = difflib.get_close_matches(e.name, [*e.available, "list"], n=1)
+        if hint:
+            msg += f" — did you mean {hint[0]!r}?"
+        msg += "\n  available: " + (", ".join(e.available) or "(none)")
+        msg += "\n  ('lo skill list' to enumerate; --skills-dir / HARNESS_SKILLS to change where skills load from)"
+        print(msg, file=sys.stderr)
+        raise SystemExit(2)
     except httpx.ConnectError:
         url = getattr(args, "url", "the server")
         raise SystemExit(

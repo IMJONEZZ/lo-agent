@@ -14,7 +14,9 @@ from local_harness.proxy.engine import ProxyEngine
 
 from mocks import MockLlamaCpp, chat_response
 
-SKILLS_DIR = str(__import__("pathlib").Path(__file__).parent.parent / "skills")
+from local_harness.skills.skill import BUILTIN_SKILLS_DIR
+
+SKILLS_DIR = str(BUILTIN_SKILLS_DIR)
 
 CALC_TOOLS = [{"type": "function", "function": {
     "name": "calculator", "description": "math",
