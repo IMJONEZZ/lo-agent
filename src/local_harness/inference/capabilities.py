@@ -43,6 +43,10 @@ class Capabilities:
     stream_logprobs: bool = (
         False  # logprobs in a streamed tool-call request (vLLM yes, llama.cpp no)
     )
+    # Per-token probabilities computed AFTER the sampler chain (llama.cpp
+    # `post_sampling_probs`): confidence over what could actually be sampled
+    # under min_p/XTC/etc., not the raw distribution they truncated away.
+    post_sampling_probs: bool = False
     responses_api: bool = False  # /v1/responses with logprobs (e.g. LM Studio)
     logprobs_via_responses: bool = False  # logprobs come from /v1/responses, not chat
     in_process: bool = False  # Tier 4, native backend only (Phase 5)
@@ -92,6 +96,7 @@ class Capabilities:
             f"parallel_n:      {self.parallel_n}",
             f"responses_api:   {self.responses_api}",
             f"logprobs_via:    {'responses' if self.logprobs_via_responses else 'chat' if self.logprobs else 'none'}",
+            f"post-sampling p: {self.post_sampling_probs}",
             f"lora (hot-swap): {self.lora_mode or 'none'}"
             + (f" · {len(self.lora_adapters)} preloaded" if self.lora_adapters else ""),
             f"context window:  {self.context_window or 'unknown'}"
@@ -183,6 +188,7 @@ async def probe(client: OpenAICompatClient) -> Capabilities:
         banned_strings=static.banned_strings,
         parallel_n=static.parallel_n,
         stream_logprobs=static.stream_logprobs,
+        post_sampling_probs=static.post_sampling_probs,
         kv_snapshot=fp.has_slots,
         context_window=detect_context_window(fp),
     )

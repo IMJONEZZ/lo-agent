@@ -34,6 +34,10 @@ class StaticCaps:
     banned_strings: bool = False
     parallel_n: bool = False
     stream_logprobs: bool = False  # returns logprobs in a streamed tool-call request
+    # Token probabilities computed AFTER the sampling chain (llama.cpp
+    # `post_sampling_probs`) — confidence over what could actually be sampled,
+    # not the raw distribution truncation samplers no longer draw from.
+    post_sampling_probs: bool = False
 
 
 class Adapter:

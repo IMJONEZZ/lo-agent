@@ -270,3 +270,35 @@ async def test_never_streams_logprobs_with_tools(tmp_path):
     bad = [b for b in rec.bodies
            if b.get("stream") and b.get("logprobs") and b.get("tools")]
     assert not bad, "must never stream logprobs+tools together"
+
+
+async def test_agent_requests_post_sampling_probs_when_supported(tmp_path):
+    log = EventLog(tmp_path / "e.db")
+    mock = MockLlamaCpp(script=SCRIPT, post_sampling=True)
+    client = OpenAICompatClient("http://test", "test-model", transport=mock.transport())
+    caps = Capabilities(
+        server="llama.cpp", seed=True, logprobs=True, post_sampling_probs=True
+    )
+    agent = Agent(client, ToolRegistry(builtin_tools()), log, capabilities=caps, base_seed=1)
+    result = await agent.run("compute (2+3) then multiply by 7")
+
+    assert result.status == "completed"
+    assert mock.post_sampling_requests == 3  # every model call asked for them
+    calls = log.events(result.run_id, type=MODEL_CALL)
+    # signals were computed from prob-shaped fields and carry provenance
+    assert all(c.payload["logprob_summary"]["post_sampling"] is True for c in calls)
+    assert all(
+        abs(c.payload["logprob_summary"]["mean_logprob"] - (-0.275)) < 1e-9
+        for c in calls
+    )
+
+
+async def test_agent_skips_post_sampling_probs_when_unsupported(tmp_path):
+    log = EventLog(tmp_path / "e.db")
+    mock = MockLlamaCpp(script=SCRIPT)
+    agent = make_agent(mock, log)
+    result = await agent.run("compute (2+3) then multiply by 7")
+    assert result.status == "completed"
+    assert mock.post_sampling_requests == 0
+    calls = log.events(result.run_id, type=MODEL_CALL)
+    assert all(c.payload["logprob_summary"]["post_sampling"] is False for c in calls)

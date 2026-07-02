@@ -80,3 +80,31 @@ async def test_probe_generic_is_tier_0():
     assert caps.kv_snapshot is False
     assert caps.raw_completion is False
     assert caps.tier() == 0
+
+
+async def test_probe_detects_post_sampling_probs():
+    # recent llama.cpp lists post_sampling_probs among the /props default params
+    mock = MockLlamaCpp(post_sampling=True)
+    async with OpenAICompatClient("http://t", "test-model", transport=mock.transport()) as c:
+        caps = await probe(c)
+    assert caps.post_sampling_probs is True
+
+    old = MockLlamaCpp()  # older server: key absent from /props
+    async with OpenAICompatClient("http://t", "test-model", transport=old.transport()) as c:
+        caps = await probe(c)
+    assert caps.post_sampling_probs is False
+
+
+def test_prob_shaped_logprobs_parse_to_log_space():
+    import math
+
+    from local_harness.inference.types import GenerationResponse
+    from mocks import _to_post_sampling_shape
+
+    resp = _to_post_sampling_shape(chat_response(content="hi"))
+    parsed = GenerationResponse.from_chat_response(resp, timing_ms=0.0)
+    assert parsed.logprobs is not None
+    # mock logprobs are -0.05 / -0.50; prob-shape round-trips back to log-space
+    assert abs(parsed.logprobs[0].logprob - (-0.05)) < 1e-9
+    assert abs(parsed.logprobs[1].logprob - (-0.50)) < 1e-9
+    assert abs(parsed.logprobs[0].top[0][1] - (-0.05)) < 1e-9
