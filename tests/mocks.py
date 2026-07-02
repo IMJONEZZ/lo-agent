@@ -73,6 +73,23 @@ def _sse_from_chat(resp: dict[str, Any], with_logprobs: bool = True) -> str:
     return body + "data: [DONE]\n\n"
 
 
+def _to_post_sampling_shape(resp: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite a chat response's logprob entries into the shape llama.cpp emits
+    with `post_sampling_probs: true` — linear `prob`/`top_probs` fields."""
+    import copy
+    import math
+
+    resp = copy.deepcopy(resp)
+    lp = (resp["choices"][0].get("logprobs") or {}).get("content") or []
+    for t in lp:
+        t["prob"] = math.exp(t.pop("logprob"))
+        t["top_probs"] = [
+            {"token": x["token"], "prob": math.exp(x["logprob"])}
+            for x in t.pop("top_logprobs", [])
+        ]
+    return resp
+
+
 def mock_token_id(text: str) -> int:
     """Deterministic fake tokenizer: first 'token' id of a string."""
     return 1000 + sum(text.lstrip().encode()[:4])
@@ -85,6 +102,7 @@ class MockLlamaCpp:
         fail_after: int | None = None,
         completion_fn=None,  # (prompt: str, body: dict) -> (text, finish_reason)
         slot_save_enabled: bool = True,
+        post_sampling: bool = False,  # server supports `post_sampling_probs`
     ):
         self.script = script  # seed -> chat response; None = echo the seed
         self.fail_after = fail_after  # raise ConnectError once this many chat calls succeeded
@@ -92,14 +110,19 @@ class MockLlamaCpp:
         self.completion_calls = 0
         self.completion_fn = completion_fn
         self.slot_save_enabled = slot_save_enabled
+        self.post_sampling = post_sampling
         self.saved_slots: list[str] = []
+        self.post_sampling_requests = 0  # chat calls that asked for post-sampling probs
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path == "/v1/models":
             return httpx.Response(200, json={"data": [{"id": "test-model", "owned_by": "llamacpp"}]})
         if path == "/props":
-            return httpx.Response(200, json={"default_generation_settings": {}})
+            gen: dict[str, Any] = {}
+            if self.post_sampling:  # recent llama.cpp lists it in the default params
+                gen["params"] = {"post_sampling_probs": False}
+            return httpx.Response(200, json={"default_generation_settings": gen})
         if path == "/slots":
             return httpx.Response(200, json=[{"id": 0}])
         if path.startswith("/slots/"):
@@ -134,6 +157,9 @@ class MockLlamaCpp:
             seed = body.get("seed", 0)
             resp = self.script[seed] if self.script is not None \
                 else chat_response(content=f"deterministic-{seed}")
+            if self.post_sampling and body.get("post_sampling_probs"):
+                self.post_sampling_requests += 1
+                resp = _to_post_sampling_shape(resp)
             if body.get("stream"):
                 return httpx.Response(
                     200, text=_sse_from_chat(resp, with_logprobs=bool(body.get("logprobs"))),

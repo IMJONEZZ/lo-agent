@@ -34,7 +34,19 @@ class LlamaCppAdapter(Adapter):
             cfg_scale=False,
             banned_strings=False,
             parallel_n=False,
+            post_sampling_probs=cls._supports_post_sampling_probs(fp),
         )
+
+    @classmethod
+    def _supports_post_sampling_probs(cls, fp: Fingerprint) -> bool:
+        """Recent llama.cpp servers list `post_sampling_probs` among the default
+        sampling params in /props — presence of the key means the server can
+        return per-token probabilities computed after the sampler chain."""
+        gen = fp.props.get("default_generation_settings") or {}
+        if "post_sampling_probs" in gen:
+            return True
+        params = gen.get("params")
+        return isinstance(params, dict) and "post_sampling_probs" in params
 
     @classmethod
     def prepare_body(cls, body: dict[str, Any]) -> dict[str, Any]:

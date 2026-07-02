@@ -6,6 +6,7 @@ can store and replay requests byte-for-byte.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -155,11 +156,22 @@ class GenerationResponse:
         logprobs = None
         lp = choice.get("logprobs")
         if lp and lp.get("content"):
+            # llama.cpp with `post_sampling_probs: true` reports linear `prob`
+            # (and `top_probs`) instead of `logprob`/`top_logprobs`; normalize
+            # both shapes into log-space so every consumer stays unchanged.
+            def _lp(x: dict) -> float:
+                if "logprob" in x:
+                    return x["logprob"]
+                return math.log(max(x.get("prob", 0.0), 1e-12))
+
             logprobs = [
                 TokenLogprob(
                     token=t["token"],
-                    logprob=t["logprob"],
-                    top=[(x["token"], x["logprob"]) for x in t.get("top_logprobs") or []],
+                    logprob=_lp(t),
+                    top=[
+                        (x["token"], _lp(x))
+                        for x in t.get("top_logprobs") or t.get("top_probs") or []
+                    ],
                 )
                 for t in lp["content"]
             ]

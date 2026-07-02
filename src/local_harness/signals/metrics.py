@@ -34,9 +34,16 @@ class StepSignals:
     min_logprob: float
     mean_entropy: float      # estimated from top-k logprobs + tail mass
     mean_top2_margin: float  # avg logprob gap between best and runner-up
+    # True when the values come from post-sampling probabilities (llama.cpp
+    # `post_sampling_probs`) — i.e. confidence over the truncated distribution
+    # actually sampled from, not the raw model distribution. Post-sampling
+    # values run higher (survivors are renormalized); threshold accordingly.
+    post_sampling: bool = False
 
     @classmethod
-    def from_logprobs(cls, logprobs: list[TokenLogprob]) -> "StepSignals | None":
+    def from_logprobs(
+        cls, logprobs: list[TokenLogprob], *, post_sampling: bool = False
+    ) -> "StepSignals | None":
         if not logprobs:
             return None
         lps = [t.logprob for t in logprobs]
@@ -58,6 +65,7 @@ class StepSignals:
             min_logprob=min(lps),
             mean_entropy=sum(entropies) / len(entropies) if entropies else 0.0,
             mean_top2_margin=sum(margins) / len(margins) if margins else 0.0,
+            post_sampling=post_sampling,
         )
 
     def to_dict(self) -> dict:

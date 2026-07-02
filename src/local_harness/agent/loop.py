@@ -146,6 +146,8 @@ class Agent:
         self.on_notice = on_notice  # one-off human-readable notices (e.g. degradation)
         self.on_tool = on_tool      # (name, phase) — phase "start"/"done" for a live UI
         self._degraded = False  # latched once we've stripped picky params for this server
+        # Confidence calibrated to the sampler chain (llama.cpp post_sampling_probs)
+        self._post_sampling = bool(self.caps.logprobs and self.caps.post_sampling_probs)
         self._promoted: set[str] = set()  # tools surfaced via tool_search this run (ToolSearch)
         self.inbox = None  # optional () -> list[str]: peer messages to inject (Coordinator)
 
@@ -204,7 +206,9 @@ class Agent:
         return kept + [tool_search_schema(len(deferred))]
 
     def _call_confidence(self, response) -> float | None:
-        signals = StepSignals.from_logprobs(response.logprobs or [])
+        signals = StepSignals.from_logprobs(
+            response.logprobs or [], post_sampling=self._post_sampling
+        )
         return signals.mean_logprob if signals else None
 
     def _system_message(self, task: str | None = None) -> Message:
@@ -449,7 +453,9 @@ class Agent:
             response = await self._one_call(run_id, messages, call_index, attempt)
             if self.policy is None:
                 break
-            signals = StepSignals.from_logprobs(response.logprobs or [])
+            signals = StepSignals.from_logprobs(
+            response.logprobs or [], post_sampling=self._post_sampling
+        )
             decision = self.policy.evaluate(signals)
             if decision.action == Action.ACCEPT:
                 break
@@ -472,6 +478,11 @@ class Agent:
             seed=self.base_seed + call_index + 1000 * attempt,
             logprobs=self.caps.logprobs,
         )
+        if self._post_sampling:
+            # Ask for probabilities of the distribution actually sampled from
+            # (post sampler chain) — raw logprobs miscalibrate confidence once
+            # min_p/XTC/etc. truncate the distribution they describe.
+            sampling.extra = {**sampling.extra, "post_sampling_probs": True}
         request = GenerationRequest(
             messages=messages, sampling=sampling, tools=self._tool_schemas()
         )
@@ -500,7 +511,9 @@ class Agent:
         else:
             response = await self._send(body, stream=False)
 
-        signals = StepSignals.from_logprobs(response.logprobs or [])
+        signals = StepSignals.from_logprobs(
+            response.logprobs or [], post_sampling=self._post_sampling
+        )
         self.log.append(
             run_id,
             MODEL_CALL,
