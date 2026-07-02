@@ -647,7 +647,7 @@ def _build_session_app(args, sandbox, *, interactive_permissions: bool = False):
 
     log = EventLog(args.db)
     bus = EventBus(log)
-    state: dict = {}
+    state: dict = {"url": args.url, "model": args.model}
 
     from ..agent.presets import get_preset
 
@@ -663,6 +663,12 @@ def _build_session_app(args, sandbox, *, interactive_permissions: bool = False):
         p = get_preset(preset or getattr(args, "preset", "build"))
         tools = ToolRegistry(builtin_tools(sandbox=sandbox))
         tools.permissions = p.permissions(approver=_auto_allow)
+        if state.get("client") is None:
+            detail = f" ({state['error']})" if state.get("error") else ""
+            raise RuntimeError(
+                f"upstream {state['url']} unreachable{detail} — "
+                "press ^o in the TUI (or POST /connect) to point at your model server"
+            )
         return Agent(
             state["client"],
             tools,
@@ -682,20 +688,46 @@ def _build_session_app(args, sandbox, *, interactive_permissions: bool = False):
             on_notice=on_notice,
         )
 
-    async def startup():
+    async def connect_upstream(url: str | None = None, model: str | None = None):
+        """(Re)build the upstream client and re-probe. Called at startup and by
+        POST /connect — an empty body just re-probes the current upstream."""
+        if url:
+            state["url"] = url.rstrip("/")
+        if model is not None:
+            state["model"] = model
+        old = state.pop("client", None)
+        state.pop("caps", None)
+        state.pop("error", None)
+        if old is not None:
+            try:
+                await old.aclose()
+            except Exception:
+                pass
         try:
-            client = await _client(args)
+            client = OpenAICompatClient(state["url"], state["model"])
+            # Reachability first: probe() tolerates missing endpoints by design,
+            # so a dead host would otherwise "probe" fine as a generic tier.
+            await client.get("/v1/models")
+            if not client.model:
+                models = await client.list_models()
+                if not models:
+                    raise RuntimeError("no models on server and none configured")
+                client.model = models[0]
             state["client"] = client
             state["caps"] = await probe(client)
         except Exception as e:
             state["error"] = str(e)
+        return health()
+
+    async def startup():
+        await connect_upstream()
 
     def health():
         caps = state.get("caps")
         return {
             "status": "ok" if caps else "degraded",
-            "upstream": args.url,
-            "model": state["client"].model if state.get("client") else args.model,
+            "upstream": state["url"],
+            "model": state["client"].model if state.get("client") else state["model"],
             "capabilities": caps.to_dict() if caps else None,
             "error": state.get("error"),
         }
@@ -703,7 +735,9 @@ def _build_session_app(args, sandbox, *, interactive_permissions: bool = False):
     manager = SessionManager(
         bus, factory, interactive_permissions=interactive_permissions
     )
-    return create_server_app(manager, health=health, on_startup=startup)
+    return create_server_app(
+        manager, health=health, on_startup=startup, connect=connect_upstream
+    )
 
 
 def cmd_serve(args) -> None:
@@ -828,12 +862,14 @@ def cmd_tail(args) -> None:
     asyncio.run(_tail())
 
 
-async def _probe_local_servers() -> tuple[str, str, str] | None:
+async def _probe_local_servers(
+    extra: list[str] | None = None,
+) -> tuple[str, str, str] | None:
     """Find the first reachable local OpenAI-compatible server, trying the common
     ports. Returns (url, server_name, first_model_id), or None if nothing answers."""
     import httpx
 
-    candidates = [
+    candidates = [(u.rstrip("/"), "server") for u in (extra or [])] + [
         ("http://localhost:8080", "llama.cpp"),
         ("http://localhost:8000", "vLLM"),
         ("http://localhost:1234", "LM Studio"),
@@ -854,15 +890,17 @@ async def _probe_local_servers() -> tuple[str, str, str] | None:
 
 def cmd_quickstart(args) -> None:
     """Auto-find a local server and drop straight into the TUI against it."""
-    found = asyncio.run(_probe_local_servers())
+    extra = [args.url] if getattr(args, "url", None) else []
+    found = asyncio.run(_probe_local_servers(extra))
     if found is None:
+        where = f"at {args.url} or " if extra else ""
         print(
-            "no local server found on :8080 (llama.cpp), :8000 (vLLM), "
+            f"no server found {where}on localhost :8080 (llama.cpp), :8000 (vLLM), "
             ":1234 (LM Studio), or :11434 (Ollama)."
         )
         print(
-            "start one, then re-run `lo quickstart` — or point at it directly: "
-            'lo run --url <url> "..."'
+            "start one, then re-run `lo quickstart` — for a server on another "
+            "machine: lo quickstart --url http://<host>:<port>"
         )
         raise SystemExit(1)
     url, name, model = found
@@ -959,7 +997,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lo")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("quickstart", help="auto-find a local server and launch the TUI")
+    p = sub.add_parser("quickstart", help="auto-find a local server and launch the TUI")
+    p.add_argument("--url", help="also try this URL first (e.g. a LAN model server)")
 
     p = sub.add_parser("daemon", help="run the session server in the background (tmux)")
     p.add_argument("action", choices=["start", "stop", "status", "logs", "attach"])
