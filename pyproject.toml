@@ -1,5 +1,5 @@
 [project]
-name = "local-harness"
+name = "lo-agent"
 version = "0.1.0"
 description = "Agent harness that exploits local-LLM advantages: determinism, logit control, KV branching, free tokens"
 readme = "README.md"
