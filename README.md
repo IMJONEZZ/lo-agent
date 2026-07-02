@@ -13,6 +13,9 @@ free-tokens compute scaling.
 uv tool install "git+https://github.com/IMJONEZZ/lo-agent"
 ```
 
+This puts the `lo` command in `~/.local/bin` — run `uv tool update-shell` if
+that isn't on your PATH yet.
+
 ### Homebrew
 
 ```bash
@@ -20,13 +23,20 @@ brew tap IMJONEZZ/lo-agent
 brew install lo-agent
 ```
 
+(The first `brew tap`/`install` from a personal tap asks you to trust
+`imjonezz/lo-agent` — that prompt is expected; confirm to proceed.)
+
 ### Build from source
 
 ```bash
 git clone https://github.com/IMJONEZZ/lo-agent
 cd lo-agent
-uv pip install -e .
+uv sync            # creates .venv/ and installs everything
+uv run lo --help   # run from the project venv
 ```
+
+To put a from-source `lo` on your PATH instead (editable — tracks your
+checkout): `uv tool install -e .`
 
 ## Quickstart
 
