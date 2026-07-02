@@ -172,3 +172,59 @@ async def test_native_skill_bridge_hotswaps_real_adapter(tmp_path):
         adapters=AdapterManager(backend), max_tokens=6, temperature=0.0)
     assert skilled.adapter == "sql_lora"
     assert skilled.text != base.text       # the hot-swapped adapter changed behavior
+
+
+def test_activation_probe_separates_training_classes(backend):
+    from local_harness.native.steering import ActivationProbe
+
+    probe = ActivationProbe.fit_contrastive(
+        backend, "honesty",
+        positive_prompts=["the sky is blue", "water is wet", "fire is hot"],
+        negative_prompts=["the sky is plaid", "water is dry", "fire is cold"],
+        layer_indices=[0, 1],
+    )
+    assert set(probe.directions) == {0, 1}
+
+    pos = probe.score_text(backend, "the sky is blue")
+    neg = probe.score_text(backend, "the sky is plaid")
+    assert 0.0 <= neg.score <= 1.0 and 0.0 <= pos.score <= 1.0
+    assert pos.score > 0.5 > neg.score  # calibrated threshold splits the classes
+
+
+def test_activation_probe_watches_generation(backend):
+    from local_harness.native.steering import ActivationProbe
+
+    probe = ActivationProbe.fit_contrastive(
+        backend, "p",
+        positive_prompts=["aaa bbb"], negative_prompts=["zzz yyy"],
+        layer_indices=[0, 1],
+    )
+    probe.attach(backend)
+    backend.generate("tell me", max_tokens=6, temperature=0.0, processors=[NoEos()])
+    readout = probe.readout()
+    probe.detach()
+
+    # one observation per forward pass: prompt prefill + each generated token
+    assert readout.n_observations >= 6
+    assert 0.0 <= readout.score <= 1.0
+    assert set(readout.per_layer) == {0, 1}
+    d = readout.to_dict()
+    assert d["name"] == "p" and "0" in d["per_layer"]
+
+    # detached: hooks are gone, generation records nothing new
+    backend.generate("tell me", max_tokens=3, temperature=0.0, processors=[NoEos()])
+    assert probe.readout().n_observations == readout.n_observations
+
+
+def test_activation_probe_save_load_roundtrip(backend, tmp_path):
+    from local_harness.native.steering import ActivationProbe
+
+    probe = ActivationProbe.fit_contrastive(
+        backend, "rt",
+        positive_prompts=["good kind true"], negative_prompts=["bad cruel false"],
+        layer_indices=[1],
+    )
+    before = probe.score_text(backend, "some new text").score
+    probe.save(tmp_path / "probe.pt")
+    loaded = ActivationProbe.load(tmp_path / "probe.pt")
+    assert abs(loaded.score_text(backend, "some new text").score - before) < 1e-9
