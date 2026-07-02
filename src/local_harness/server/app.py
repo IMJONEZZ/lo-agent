@@ -10,6 +10,9 @@
   GET    /sessions                                   -> [{run_id, task, status, ...}]
   DELETE /session/{id}                               -> {deleted: true}
   GET    /health                                     -> capability report
+  POST   /connect                  {url?, model?}    -> health payload (repoint the
+                                                       upstream and re-probe; empty
+                                                       body = re-probe current)
 
 The events stream is the OpenCode-style bus: every client that opens it observes
 the same live session (catch-up from seq 0, then live), and the SSE `event:` field
@@ -40,6 +43,7 @@ def create_server_app(
     manager: SessionManager, *,
     health: dict | Callable[[], dict] | None = None,
     on_startup: Callable[[], Awaitable[None]] | None = None,
+    connect: Callable[..., Awaitable[dict]] | None = None,
 ) -> Starlette:
     async def start_session(request: Request):
         body = await request.json()
@@ -102,6 +106,15 @@ def create_server_app(
         payload = health() if callable(health) else (health or {"status": "ok"})
         return JSONResponse(payload)
 
+    async def connect_route(request: Request):
+        if connect is None:
+            return JSONResponse(
+                {"error": "this server has no reconfigurable upstream"},
+                status_code=501,
+            )
+        body = json.loads(await request.body() or b"{}")
+        return JSONResponse(await connect(body.get("url"), body.get("model")))
+
     async def index(request: Request):
         return HTMLResponse(index_html())
 
@@ -123,6 +136,7 @@ def create_server_app(
             Route("/session/{run_id}", delete_session, methods=["DELETE"]),
             Route("/sessions", sessions, methods=["GET"]),
             Route("/health", health_route, methods=["GET"]),
+            Route("/connect", connect_route, methods=["POST"]),
         ],
         lifespan=lifespan,
     )

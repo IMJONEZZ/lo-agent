@@ -596,6 +596,7 @@ class HarnessApp(App):
         # of building and driving an Agent in-process. The default (None) is the
         # original in-process path (kept as the --in-process escape hatch).
         self.server = server.rstrip("/") if server else None
+        self._upstream = None  # server mode: the upstream URL reported by /health
         # shared_db: the server writes to the SAME db this TUI polls (embedded,
         # local). Then persisted events arrive via the poll, so we DON'T mirror
         # them from the SSE stream (which would duplicate); we use SSE only for
@@ -906,7 +907,8 @@ class HarnessApp(App):
             async with httpx.AsyncClient(timeout=10) as c:
                 for i in range(60):  # ≤~60s for the server to finish probing upstream
                     health = (await c.get(f"{self.server}/health")).json()
-                    if health.get("capabilities"):
+                    # error set = probe finished and failed; don't poll the full 60s
+                    if health.get("capabilities") or health.get("error"):
                         break
                     if i == 0:
                         self.sub_title = f"⇄ {self.server} · server probing upstream…"
@@ -919,13 +921,19 @@ class HarnessApp(App):
                 severity="error",
                 timeout=10,
             )
+            if auto_connect_on_fail:
+                self.action_connect()
             return
+        self._upstream = health.get("upstream")
         if not health.get("capabilities"):
             self.notify(
-                f"server reached but upstream unavailable: {health.get('error')}",
+                f"server reached but its upstream {self._upstream} is unavailable "
+                f"({health.get('error')}) — ^o to connect to your model server",
                 severity="warning",
-                timeout=10,
+                timeout=12,
             )
+            if auto_connect_on_fail:
+                self.action_connect()
         self.caps = _caps_from_health(health)
         model = health.get("model", "?")
         tier = self.caps.tier() if self.caps else "?"
@@ -940,6 +948,23 @@ class HarnessApp(App):
     async def _server_submit(self, text: str) -> None:
         """Start or continue a session on the server, then follow its stream."""
         import httpx
+
+        if self.caps is None:
+            # Upstream was down at startup — maybe it's up now: one re-probe
+            # before giving up (covers "started llama.cpp after launching the TUI").
+            try:
+                async with httpx.AsyncClient(timeout=90) as c:
+                    (await c.post(f"{self.server}/connect", json={})).raise_for_status()
+            except Exception:
+                pass
+            await self._probe_server()
+            if self.caps is None:
+                self.notify(
+                    f"upstream {self._upstream} still unreachable — ^o to connect",
+                    severity="error",
+                    timeout=10,
+                )
+                return
 
         preset = self._preset.name  # let the server build the agent for this preset
         cm = self._code_mode
@@ -1366,6 +1391,28 @@ class HarnessApp(App):
         )
 
     async def _reconnect(self, url: str, model: str, key: str) -> None:
+        if self.server is not None:
+            # Server mode: the embedded/remote server owns the upstream client —
+            # repoint it over HTTP instead of swapping the (unused) local client.
+            import httpx
+
+            self.caps = None
+            self._status_base = None
+            self._caps_ready = asyncio.Event()
+            self.sub_title = f"repointing server upstream to {url}…"
+            try:
+                # generous timeout: probing a large model can take a while
+                async with httpx.AsyncClient(timeout=90) as c:
+                    r = await c.post(
+                        f"{self.server}/connect",
+                        json={"url": url, "model": model or None},
+                    )
+                    r.raise_for_status()
+            except Exception as e:
+                self.notify(f"connect failed: {e}", severity="error", timeout=10)
+                return
+            await self._probe_server()
+            return
         try:
             await self.client.aclose()
         except Exception:
@@ -2928,7 +2975,8 @@ class HarnessApp(App):
                 url, model, key = result
                 self.run_worker(self._reconnect(url, model, key), exclusive=False)
 
-        self.push_screen(ConnectScreen(self.client.base_url, self.client.model), done)
+        url = getattr(self, "_upstream", None) or self.client.base_url
+        self.push_screen(ConnectScreen(url, self.client.model), done)
 
     def action_delete_run(self) -> None:
         """Delete the run highlighted in the history sidebar (Delete key)."""

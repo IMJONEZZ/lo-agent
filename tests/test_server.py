@@ -274,3 +274,93 @@ async def test_http_sse_stream(tmp_path):
                     break
         assert "run_started" in seen
         assert "run_completed" in seen
+
+
+# --- POST /connect: repoint the upstream without restarting the server -------
+
+
+async def test_connect_route_501_when_unsupported(tmp_path):
+    mgr, _ = make_manager(tmp_path)
+    app = create_server_app(mgr, health={"status": "ok"})
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://srv") as c:
+        assert (await c.post("/connect", json={"url": "http://x"})).status_code == 501
+
+
+def _session_app(tmp_path, url="http://down.invalid:9"):
+    from local_harness.cli import main as cli
+    from local_harness.sandbox import make_sandbox
+
+    args = cli.build_parser().parse_args(
+        ["serve", "--url", url, "--model", "m", "--db", str(tmp_path / "h.db")]
+    )
+    return cli._build_session_app(args, make_sandbox("host", str(tmp_path)))
+
+
+async def test_health_reports_upstream_and_connect_repoints(tmp_path, monkeypatch):
+    from local_harness.cli import main as cli
+
+    app = _session_app(tmp_path)
+    transport = httpx.ASGITransport(app=app)
+    async with (
+        httpx.AsyncClient(transport=transport, base_url="http://srv") as c,
+        transport.app.router.lifespan_context(transport.app),
+    ):
+        h = (await c.get("/health")).json()
+        assert h["status"] == "degraded"
+        assert h["upstream"] == "http://down.invalid:9"
+        assert h["error"]
+
+        # repoint to another unreachable host: still degraded, upstream updated
+        h = (await c.post("/connect", json={"url": "http://also.invalid:9"})).json()
+        assert h["status"] == "degraded"
+        assert h["upstream"] == "http://also.invalid:9"
+
+        # repoint to a "good" upstream (mocked client+probe): health flips to ok
+        class FakeClient:
+            def __init__(self, url, model, **kw):
+                self.base_url, self.model = url, model
+
+            async def get(self, path):
+                return None  # reachable
+
+            async def aclose(self):
+                pass
+
+        async def fake_probe(client):
+            return CAPS
+
+        monkeypatch.setattr(cli, "OpenAICompatClient", FakeClient)
+        monkeypatch.setattr(cli, "probe", fake_probe)
+        h = (await c.post("/connect", json={"url": "http://pedrogpt:8080"})).json()
+        assert h["status"] == "ok"
+        assert h["upstream"] == "http://pedrogpt:8080"
+        assert h["capabilities"]["server"] == "llama.cpp"
+
+
+async def test_session_after_failed_startup_fails_with_upstream_hint(tmp_path):
+    from local_harness.events.bus import TERMINAL as _TERMINAL
+
+    app = _session_app(tmp_path)
+    transport = httpx.ASGITransport(app=app)
+    async with (
+        httpx.AsyncClient(transport=transport, base_url="http://srv") as c,
+        transport.app.router.lifespan_context(transport.app),
+    ):
+        r = await c.post("/session", json={"task": "hello"})
+        assert r.status_code == 200
+        run_id = r.json()["run_id"]
+        # follow the stream to its terminal event: a RUN_FAILED naming the upstream
+        events = []
+        async with c.stream(
+            "GET", f"/session/{run_id}/events", params={"once": "1"}
+        ) as resp:
+            async for line in resp.aiter_lines():
+                if line.startswith("event: "):
+                    events.append(line.split(": ", 1)[1])
+                if line.startswith("data: ") and events and events[-1] == "run_failed":
+                    payload = json.loads(line.split(": ", 1)[1])
+                    err = payload["payload"]["error"]
+                    assert "down.invalid" in err and "connect" in err.lower()
+                    break
+        assert events[-1] == "run_failed"
