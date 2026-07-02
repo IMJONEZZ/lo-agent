@@ -106,7 +106,7 @@ async def bench_batch_invariance(
 
 
 async def bench_grammar(
-    client: OpenAICompatClient, caps: Capabilities, skills_dir: str, n: int
+    client: OpenAICompatClient, caps: Capabilities, skills_dir: str | None, n: int
 ) -> BenchResult:
     if caps.grammar is None:
         return BenchResult(
@@ -219,7 +219,7 @@ def bench_cost(capture: str | Path = "demos/frontier_cost_capture.json") -> Benc
 async def run_bench(
     client: OpenAICompatClient,
     caps: Capabilities,
-    skills_dir: str = "skills",
+    skills_dir: str | None = None,
     n: int = 8,
     batch_invariance: bool = True,
 ) -> list[BenchResult]:

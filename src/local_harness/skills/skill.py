@@ -34,6 +34,26 @@ from typing import Any
 
 from .ir import Grammar, GrammarError
 
+BUILTIN_SKILLS_DIR = Path(__file__).parent / "builtin"
+
+
+def default_skills_dir() -> Path:
+    """A cwd `skills/` dir with skills in it wins; otherwise the builtins."""
+    local = Path("skills")
+    if local.is_dir() and any(local.glob("*.toml")):
+        return local
+    return BUILTIN_SKILLS_DIR
+
+
+class SkillNotFound(KeyError):
+    def __init__(self, name: str, available: list[str]):
+        self.name = name
+        self.available = available
+        super().__init__(f"unknown skill: {name!r} (have: {available})")
+
+    def __str__(self) -> str:
+        return f"unknown skill: {self.name!r} (have: {self.available})"
+
 
 @dataclass
 class Skill:
@@ -137,8 +157,8 @@ def load_skill_toml(path: str | Path, registry: "SkillRegistry | None" = None) -
 class SkillRegistry:
     def __init__(self, skill_dir: str | Path | None = None):
         self._skills: dict[str, Skill] = {}
-        self.skill_dir = Path(skill_dir) if skill_dir else None
-        if self.skill_dir and self.skill_dir.is_dir():
+        self.skill_dir = Path(skill_dir) if skill_dir else default_skills_dir()
+        if self.skill_dir.is_dir():
             # Two passes so imports resolve regardless of load order.
             paths = sorted(self.skill_dir.glob("*.toml"))
             deferred = []
@@ -155,7 +175,7 @@ class SkillRegistry:
 
     def get(self, name: str) -> Skill:
         if name not in self._skills:
-            raise KeyError(f"unknown skill: {name!r} (have: {sorted(self._skills)})")
+            raise SkillNotFound(name, sorted(self._skills))
         return self._skills[name]
 
     def names(self) -> list[str]:

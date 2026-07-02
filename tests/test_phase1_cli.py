@@ -114,3 +114,30 @@ def test_cli_status_renders_tier_and_ctx(tmp_path):
     console.print(r)
     text = console.export_text()
     assert "tier" in text and "run" in text  # the preset chip + tier segment
+
+
+def test_skill_typo_exits_2_with_suggestion(monkeypatch, capsys):
+    import sys
+
+    import pytest
+
+    called = []
+    monkeypatch.setattr(cli, "_client", lambda args: called.append(1))
+    monkeypatch.setattr(sys, "argv", ["lo", "skill", "ist"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "did you mean 'list'" in err
+    assert "yes_no" in err  # available skills listed
+    assert not called  # validated before any connection attempt
+
+
+def test_skill_list_empty_registry_says_where_it_looked(monkeypatch, capsys, tmp_path):
+    import sys
+
+    empty = tmp_path / "nothing_here"
+    monkeypatch.setattr(sys, "argv", ["lo", "skill", "list", "--skills-dir", str(empty)])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "no skills found" in out and str(empty) in out

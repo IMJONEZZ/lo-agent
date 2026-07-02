@@ -577,7 +577,7 @@ class HarnessApp(App):
         required_steps: list[str] | None = None,
         terminal_tools: frozenset[str] = frozenset(),
         context_budget: int | None = None,
-        skills_dir: str = "skills",
+        skills_dir: str | None = None,
         tools_config: dict | None = None,
         resample_threshold: float | None = None,
         memory_dir: str = ".harness/memory",
