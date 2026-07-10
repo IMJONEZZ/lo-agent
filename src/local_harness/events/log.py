@@ -45,6 +45,12 @@ class RunMeta:
     task: str
     status: str  # running | completed | failed
     created_at: float
+    title: str | None = None  # user-given name; falls back to task in UIs
+
+    @property
+    def label(self) -> str:
+        """What to show for this run: the user's title, else the task."""
+        return self.title or self.task
 
 
 class EventLog:
@@ -79,6 +85,10 @@ class EventLog:
             );
             """
         )
+        # Migration: `title` (user-given run name) arrived after v0.1.21.
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(runs)")]
+        if "title" not in cols:
+            self._conn.execute("ALTER TABLE runs ADD COLUMN title TEXT")
         self._conn.commit()
 
     def create_run(self, task: str) -> str:
@@ -131,7 +141,8 @@ class EventLog:
 
     def run(self, run_id: str) -> RunMeta | None:
         row = self._conn.execute(
-            "SELECT run_id, task, status, created_at FROM runs WHERE run_id = ?", (run_id,)
+            "SELECT run_id, task, status, created_at, title FROM runs WHERE run_id = ?",
+            (run_id,),
         ).fetchone()
         return RunMeta(*row) if row else None
 
@@ -144,9 +155,19 @@ class EventLog:
         return [
             RunMeta(*row)
             for row in self._conn.execute(
-                "SELECT run_id, task, status, created_at FROM runs ORDER BY created_at"
+                "SELECT run_id, task, status, created_at, title FROM runs "
+                "ORDER BY created_at"
             )
         ]
+
+    def rename_run(self, run_id: str, title: str) -> None:
+        """Give a run a human name (shown instead of the task in listings).
+        An empty title clears the name back to the task."""
+        self._conn.execute(
+            "UPDATE runs SET title = ? WHERE run_id = ?",
+            (title.strip() or None, run_id),
+        )
+        self._conn.commit()
 
     def delete_events_from(self, run_id: str, from_seq: int) -> None:
         """Drop events at or after a sequence number (used by /undo to remove

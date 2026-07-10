@@ -397,6 +397,37 @@ class RewindScreen(ModalScreen[int | None]):
         self.dismiss(None)
 
 
+class RenameScreen(ModalScreen[str | None]):
+    """Name (or rename) a conversation — the title shows in the history sidebar
+    and `lo runs` instead of the raw task. Empty submit clears the name."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, run_id: str, current: str) -> None:
+        super().__init__()
+        self._run_id = run_id
+        self._current = current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="renamebox"):
+            yield Label(f"Rename conversation {self._run_id[:8]}", id="renametitle")
+            yield Input(value=self._current[:60], placeholder="a name you'll recognize",
+                        id="renameinput")
+            yield Label("enter save · empty clears the name · esc cancel",
+                        id="renamehint")
+
+    def on_mount(self) -> None:
+        box = self.query_one("#renameinput", Input)
+        box.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.dismiss(event.value)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class PromptInput(Input):
     """The prompt box, with optional vim modal editing. Intercepts keys before the
     Input inserts them: in vim normal mode the app consumes motions/edits; in
@@ -501,50 +532,63 @@ class ThemePickerScreen(ModalScreen[str | None]):
 class HarnessApp(App):
     TITLE = "local_harness"
     CSS = """
-    #banner { background: $surface; border-bottom: solid $accent; padding: 0 1; }
+    /* Chrome discipline: structural dividers are a subtle raised-panel line; the
+       cyan $primary is reserved for what's active/focal (focused input, the open
+       slash menu, a modal, the sidebar cursor). Gold/$accent is NOT used for
+       chrome — it stays a transcript signal (tools/warnings). */
+    #banner { background: $surface; border-bottom: solid $panel-lighten-2; padding: 0 1; }
     #banner_body { padding: 1 1 0 1; }
     #main { height: 1fr; }
-    #runs { width: 38; display: none; border-right: solid $accent; }
-    #runs.visible { display: block; }
+    #runspane { width: 38; display: none; border-right: solid $panel-lighten-2; }
+    #runspane.visible { display: block; }
+    #runs { width: 100%; height: 1fr; }
+    #runsfilter { display: none; margin: 0; border: tall $panel-lighten-2; }
+    #runspane.filtering #runsfilter { display: block; }
+    RenameScreen { align: center middle; }
+    #renamebox { width: 72; height: auto; padding: 1 2; border: thick $primary; background: $surface; }
+    #renametitle { text-style: bold; padding-bottom: 1; }
+    #renamehint { color: $text-muted; padding-top: 1; }
     #chat { height: 1fr; padding: 1 2; scrollbar-gutter: stable; }
-    #live { height: auto; max-height: 14; padding: 0 2; border-top: solid $panel; }
+    #live { height: auto; max-height: 14; padding: 0 2; border-top: solid $panel-lighten-2; }
     #statusbar { height: 1; padding: 0 2; background: $panel; color: $text; }
     #slashmenu { display: none; height: auto; max-height: 9; margin: 0 1;
-                 border: tall $accent; background: $surface; }
+                 border: tall $primary; background: $surface; }
     #slashmenu.visible { display: block; }
-    Input { border: tall $accent; margin: 0 1; }
+    Input { border: tall $panel-lighten-2; margin: 0 1; }
+    Input:focus { border: tall $primary; }
     Input.vim-normal { border: tall $warning; }
+    Input.shell-mode { border: tall $success; }
     ConnectScreen { align: center middle; }
-    #connectbox { width: 76; height: auto; padding: 1 2; border: thick $accent; background: $surface; }
+    #connectbox { width: 76; height: auto; padding: 1 2; border: thick $primary; background: $surface; }
     #connecttitle { text-style: bold; padding-bottom: 1; }
     #connecthint { color: $text-muted; padding-top: 1; }
     ModelPickerScreen { align: center middle; }
-    #pickbox { width: 76; height: auto; max-height: 80%; padding: 1 2; border: thick $accent; background: $surface; }
+    #pickbox { width: 76; height: auto; max-height: 80%; padding: 1 2; border: thick $primary; background: $surface; }
     #picktitle { text-style: bold; padding-bottom: 1; }
-    #modellist { height: auto; max-height: 16; border: tall $accent; }
+    #modellist { height: auto; max-height: 16; border: tall $panel-lighten-2; }
     #pickhint { color: $text-muted; padding-top: 1; }
     ThemePickerScreen { align: center middle; }
-    #themebox { width: 56; height: auto; max-height: 80%; padding: 1 2; border: thick $accent; background: $surface; }
+    #themebox { width: 56; height: auto; max-height: 80%; padding: 1 2; border: thick $primary; background: $surface; }
     #themetitle { text-style: bold; padding-bottom: 1; }
-    #themelist { height: auto; max-height: 16; border: tall $accent; }
+    #themelist { height: auto; max-height: 16; border: tall $panel-lighten-2; }
     #themehint { color: $text-muted; padding-top: 1; }
     SnipScreen { align: center middle; }
-    #snipbox { width: 84; height: auto; max-height: 80%; padding: 1 2; border: thick $accent; background: $surface; }
+    #snipbox { width: 84; height: auto; max-height: 80%; padding: 1 2; border: thick $primary; background: $surface; }
     #sniptitle { text-style: bold; padding-bottom: 1; }
-    #sniplist { height: auto; max-height: 16; border: tall $accent; }
+    #sniplist { height: auto; max-height: 16; border: tall $panel-lighten-2; }
     #sniphint { color: $text-muted; padding-top: 1; }
     RewindScreen { align: center middle; }
-    #rewindbox { width: 80; height: auto; max-height: 80%; padding: 1 2; border: thick $accent; background: $surface; }
+    #rewindbox { width: 80; height: auto; max-height: 80%; padding: 1 2; border: thick $primary; background: $surface; }
     #rewindtitle { text-style: bold; padding-bottom: 1; }
-    #rewindlist { height: auto; max-height: 16; border: tall $accent; }
+    #rewindlist { height: auto; max-height: 16; border: tall $panel-lighten-2; }
     #rewindhint { color: $text-muted; padding-top: 1; }
     PermissionModal { align: center middle; }
-    #permbox { width: 72; height: auto; padding: 1 2; border: thick $accent; background: $surface; }
+    #permbox { width: 72; height: auto; padding: 1 2; border: thick $primary; background: $surface; }
     #permtitle { text-style: bold; }
     #permargs { color: $text-muted; padding: 1 0; }
     #permhint { color: $text-muted; }
     OverlayScreen { align: center middle; }
-    #overlaybox { width: 92; max-width: 96%; height: 80%; padding: 0 1 1 1; background: $surface; border: thick $accent; }
+    #overlaybox { width: 92; max-width: 96%; height: 80%; padding: 0 1 1 1; background: $surface; border: thick $primary; }
     #overlaybody { height: 1fr; padding: 1 1 0 1; }
     #overlayhint { color: $text-muted; padding: 1 1 0 1; }
     """
@@ -618,6 +662,7 @@ class HarnessApp(App):
         self.tools_config = tools_config
         self._tool_registry = None  # builtins + UTCP/MCP, built once at startup
         self._skills = None
+        self._commands = None  # lazily-loaded file-authored slash commands
         self.max_steps = max_steps
         self.use_guardrails = use_guardrails
         self.required_steps = required_steps or []
@@ -629,8 +674,9 @@ class HarnessApp(App):
         self._follow = True
         self._blank = False  # /new or /clear: hold a blank slate
         self._rendered = 0
-        self._runs_state: list[tuple] = []
+        self._runs_state: list[tuple] | None = []  # None forces a table rebuild
         self._run_ids: list[str] = []
+        self._runs_filter = ""  # history sidebar filter ('/' with the table focused)
         self._status_base: str | None = None
         self._spin = 0
         self._welcomed = False
@@ -678,6 +724,8 @@ class HarnessApp(App):
         self._vim_enabled = False  # /vim — modal editing on the prompt
         self._vim_mode = "insert"  # insert | normal
         self._vim_pending = ""  # for two-key ops like dd
+        self._shell_mode = False  # `!`-prefix shell mode (delete the ! to exit)
+        self._pending_shell: list[tuple[str, str]] = []  # (cmd, output) fed to next turn
         self._last_quit = 0.0  # ^C-twice-to-exit timestamp
         self._active_worker = (
             None  # the in-flight run worker (for /stop · Esc interrupt)
@@ -692,7 +740,9 @@ class HarnessApp(App):
         ):
             yield Static("probing the server…", id="banner_body")
         with Horizontal(id="main"):
-            yield DataTable(id="runs")
+            with Vertical(id="runspane"):
+                yield Input(placeholder="filter conversations…", id="runsfilter")
+                yield DataTable(id="runs")
             yield RichLog(id="chat", wrap=True, markup=False)
         yield Static(id="live")
         yield Static(id="statusbar")
@@ -713,12 +763,18 @@ class HarnessApp(App):
             self._vim_enabled = bool(cfg.get("vim", False))
         except Exception:
             pass
+        try:  # file-authored agents (.lo/agents, .opencode/agents) resolvable by name
+            from ..agent.presets import register_file_presets
+
+            register_file_presets()
+        except Exception:
+            pass
         self.event_log = EventLog(self.db_path)
         table = self.query_one(DataTable)
         table.cursor_type = "row"
         table.add_columns("run", "status", "task")
         self.sub_title = "connecting…"
-        self.query_one(Input).focus()
+        self.query_one("#prompt", Input).focus()
         self.run_worker(self._probe_worker(auto_connect_on_fail=True), exclusive=False)
         self.set_interval(0.1, self._tick)
         self._tick()
@@ -752,6 +808,11 @@ class HarnessApp(App):
             "Memory",
             "USER / MEMORY / PROJECT notes + recall (/memory)",
             self.action_memory,
+        )
+        yield SystemCommand(
+            "Inspect model calls",
+            "Per-call timing, tokens, logprob confidence (/inspect)",
+            self.action_inspect,
         )
         yield SystemCommand(
             "Code review",
@@ -925,6 +986,23 @@ class HarnessApp(App):
                 self.action_connect()
             return
         self._upstream = health.get("upstream")
+        # Keep our local client pointed at the server's real upstream. In server
+        # mode the server owns the turn loop, but several features drive the model
+        # directly through self.client (/review, /security-review, the advantage
+        # demos, skills). If we leave self.client on the TUI's stale launch URL,
+        # those dial a dead endpoint ("all connection attempts failed") even though
+        # the server is healthy. The upstream is reachable from here too (embedded
+        # server shares this host; a repointed remote reports a reachable URL).
+        up_url, up_model = self._upstream, health.get("model")
+        if up_url and (
+            up_url.rstrip("/") != (self.client.base_url or "").rstrip("/")
+            or (up_model and up_model != self.client.model)
+        ):
+            try:
+                await self.client.aclose()
+            except Exception:
+                pass
+            self.client = OpenAICompatClient(up_url, up_model or self.client.model)
         if not health.get("capabilities"):
             self.notify(
                 f"server reached but its upstream {self._upstream} is unavailable "
@@ -945,7 +1023,7 @@ class HarnessApp(App):
         self._maybe_welcome()
         self._caps_ready.set()
 
-    async def _server_submit(self, text: str) -> None:
+    async def _server_submit(self, text: str, restore_preset=None) -> None:
         """Start or continue a session on the server, then follow its stream."""
         import httpx
 
@@ -967,6 +1045,9 @@ class HarnessApp(App):
                 return
 
         preset = self._preset.name  # let the server build the agent for this preset
+        # The server now owns the preset name for this turn, so revert locally right
+        # away — a file-command's `agent:` must not pin the session's next turn.
+        self._restore_preset(restore_preset)
         cm = self._code_mode
         try:
             async with httpx.AsyncClient(timeout=30) as c:
@@ -1218,6 +1299,7 @@ class HarnessApp(App):
             learn=self._learn_state(),
             ctx=self._ctx,
             vim=self._vim_mode if self._vim_enabled else None,
+            shell=self._shell_mode,
         )
         try:
             self.query_one("#statusbar", Static).update(bar)
@@ -1305,23 +1387,33 @@ class HarnessApp(App):
             on_notice=lambda m: self.notify(m, severity="warning", timeout=8),
         )
 
-    async def _run_worker(self, task: str) -> None:
+    async def _run_worker(self, task: str, restore_preset=None) -> None:
         await self._caps_ready.wait()
         try:
             await self._build_agent().run(task)
         except Exception as e:
             self.notify(f"run error: {e}", severity="error")
+        finally:
+            self._restore_preset(restore_preset)
         await self._auto_consolidate()
         self._maybe_background()
 
-    async def _continue_worker(self, run_id: str, message: str) -> None:
+    async def _continue_worker(self, run_id: str, message: str, restore_preset=None) -> None:
         await self._caps_ready.wait()
         try:
             await self._build_agent().continue_run(run_id, message)
         except Exception as e:
             self.notify(f"run error: {e}", severity="error")
+        finally:
+            self._restore_preset(restore_preset)
         await self._auto_consolidate()
         self._maybe_background()
+
+    def _restore_preset(self, preset) -> None:
+        """Revert to `preset` after a command turn that ran under its own `agent:`."""
+        if preset is not None and preset is not self._preset:
+            self._preset = preset
+            self._apply_preset()
 
     async def _auto_consolidate(self) -> None:
         """Automatic capture: after a completed run, write a one-line episodic note
@@ -1489,7 +1581,7 @@ class HarnessApp(App):
         except NoMatches:  # mid mount/teardown — nothing to draw yet
             return
         active_running = any(
-            s == "running" and r == self.active for r, s, _ in self._runs_state
+            s == "running" and r == self.active for r, s, _ in self._runs_state or []
         )
         if not (self._streaming or active_running):
             live.update("")
@@ -1569,21 +1661,67 @@ class HarnessApp(App):
     # --- UI events -------------------------------------------------------
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "runsfilter":  # enter: keep the filter, browse rows
+            self.query_one("#runs", DataTable).focus()
+            return
         # Only the main prompt submits a turn. Modal inputs (Connect, etc.) bubble
         # their Input.Submitted up here too — ignore them so a typed provider URL
         # isn't mistaken for a message.
         if event.input.id != "prompt":
             return
         text = event.value.strip()
-        event.input.value = ""
+        was_shell = self._shell_mode or text.startswith("!")
+        event.input.value = ""  # clears → on_input_changed drops shell mode
         if not text:
+            return
+        if was_shell:
+            cmd = text[1:].strip() if text.startswith("!") else text
+            if cmd:
+                self.run_worker(self._submit_shell(cmd), exclusive=False)
             return
         if text.startswith("/"):
             self._handle_slash(text)
             return
         self._submit_turn(text)
 
-    def _submit_turn(self, text: str) -> None:
+    async def _submit_shell(self, cmd: str) -> None:
+        """Run a `!` shell command through the sandbox (host fallback), frame the
+        output in the transcript, and buffer it so the next turn carries it as
+        context to the model — mirrors OpenCode's `!` shell result."""
+        import asyncio as aio
+
+        chat = self.query_one(RichLog)
+        proc = None
+        try:
+            if self._sandbox is not None:
+                output, rc = await self._sandbox.exec(cmd, timeout=30)
+            else:  # no sandbox built (e.g. remote server) → run on the host
+                proc = await aio.create_subprocess_shell(
+                    cmd, stdout=aio.subprocess.PIPE, stderr=aio.subprocess.STDOUT
+                )
+                out_b, _ = await aio.wait_for(proc.communicate(), timeout=30)
+                output, rc = out_b.decode(errors="replace"), proc.returncode or 0
+        except aio.TimeoutError:
+            output, rc = "(timed out after 30s)", 124
+            if proc is not None:  # don't orphan the host subprocess on timeout
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+        except Exception as e:  # never let a bad command kill the TUI
+            output, rc = f"(shell error: {e})", 1
+        chat.write(render.run_output_artifact(cmd, output, ok=(rc == 0), lang="text"))
+        chat.scroll_end(animate=False)
+        # Cap what we carry into context so a huge dump can't blow the window.
+        self._pending_shell.append((cmd, output[:4000]))
+
+    def _submit_turn(self, text: str, restore_preset=None) -> None:
+        # `restore_preset` (set by a file-command with an `agent:`) is the preset to
+        # revert to once this one turn finishes, so a command doesn't pin the session.
+        if self._pending_shell:  # carry `!` shell output into this turn's context
+            ctx = "\n\n".join(f"$ {c}\n{o}".strip() for c, o in self._pending_shell)
+            text = f"[shell output from commands I just ran]\n{ctx}\n\n{text}"
+            self._pending_shell = []
         if not self._banner_collapsed_once:  # reclaim vertical space for the transcript
             self._banner_collapsed_once = True
             try:
@@ -1609,23 +1747,26 @@ class HarnessApp(App):
         if self.server is not None:  # thin client: the server runs the agent
             if status == "running":
                 self.notify("still working — wait for the current turn to finish")
+                self._restore_preset(restore_preset)  # no turn started → don't pin
                 return
             self._active_worker = self.run_worker(
-                self._server_submit(send), exclusive=False
+                self._server_submit(send, restore_preset=restore_preset), exclusive=False
             )
             return
         if is_continue:
             # continue the loaded conversation rather than starting a new one
             self._active_worker = self.run_worker(
-                self._continue_worker(self.active, send), exclusive=False
+                self._continue_worker(self.active, send, restore_preset=restore_preset),
+                exclusive=False,
             )
         elif status == "running":
             self.notify("still working — wait for the current turn to finish")
+            self._restore_preset(restore_preset)  # no turn started → don't pin
         else:
             self._blank = False
             self._follow = True
             self._active_worker = self.run_worker(
-                self._run_worker(send), exclusive=False
+                self._run_worker(send, restore_preset=restore_preset), exclusive=False
             )
 
     def action_confirm_quit(self) -> None:
@@ -1749,6 +1890,9 @@ class HarnessApp(App):
         archive_id = self.event_log.rewind(self.active, from_seq)
         if archive_id is None:
             return
+        # The archive is now the NEWEST run; without this, follow-latest in
+        # _tick would jump the view straight into the tail we just removed.
+        self._follow = False
         self._rendered = 0
         self.query_one(RichLog).clear()
         self._render_pending()
@@ -1760,7 +1904,9 @@ class HarnessApp(App):
         )
 
     def _active_status(self) -> str | None:
-        return next((s for r, s, _ in self._runs_state if r == self.active), None)
+        return next(
+            (s for r, s, _ in self._runs_state or [] if r == self.active), None
+        )
 
     # --- plan flow · external editor · code artifacts --------------------
 
@@ -2085,6 +2231,63 @@ class HarnessApp(App):
         except Exception:
             return set()
 
+    # Built-in slash names (incl. aliases) that `_handle_slash` dispatches before
+    # file-authored commands. A command file whose stem collides with one of these
+    # would be advertised in the menu but never run, so we drop it at load time.
+    _BUILTIN_SLASH = frozenset({
+        "new", "clear", "help", "?", "agent", "mode", "sessions", "rewind", "undo",
+        "stop", "interrupt", "snip", "delete", "usage", "context", "ctx", "inspect",
+        "memory",
+        "mem", "review", "security-review", "sec-review", "secreview", "agents",
+        "tasks", "mcp", "vim", "codemode", "code-mode", "theme", "cost", "export",
+        "model", "fast", "effort", "replay", "plan", "fork", "plan-fork", "connect",
+        "provider", "think", "thinking", "editor", "edit", "approve", "build-it",
+        "run", "preview", "btw",
+    })
+
+    def _command_registry(self) -> dict:
+        if self._commands is None:
+            from ..agent.commands import load_commands
+
+            try:
+                loaded = load_commands()
+                reserved = self._BUILTIN_SLASH | _ADVANTAGE_NAMES
+                self._commands = {n: c for n, c in loaded.items() if n not in reserved}
+            except Exception:
+                self._commands = {}
+        return self._commands
+
+    def _command_names(self) -> set[str]:
+        return set(self._command_registry())
+
+    async def _run_custom_command(self, name: str, arg: str) -> None:
+        """Expand a file-authored command and submit it as a turn (optionally
+        under the preset it names)."""
+        from ..agent.commands import render_template
+
+        cmd = self._command_registry().get(name)
+        if cmd is None:
+            self.notify(f"no such command /{name}", severity="warning")
+            return
+        try:
+            text = await render_template(cmd.template, arg, sandbox=self._sandbox)
+        except Exception as e:
+            self.notify(f"/{name} failed to expand: {e}", severity="error")
+            return
+        restore = None
+        if cmd.agent:  # run this ONE turn under a named preset, then revert
+            from ..agent.presets import get_preset
+
+            restore = self._preset
+            self._preset = get_preset(cmd.agent)
+            self._apply_preset()
+        if text.strip():
+            self._blank = False
+            self._follow = True
+            self._submit_turn(text, restore_preset=restore)
+        else:
+            self._restore_preset(restore)  # nothing submitted → don't leave it pinned
+
     _SLASH_HELP = {
         "help": "keys & commands",
         "new": "reset the conversation",
@@ -2100,6 +2303,7 @@ class HarnessApp(App):
         "usage": "cost / determinism / confidence",
         "replay": "verify determinism",
         "context": "what's in the context window (and how full)",
+        "inspect": "per-model-call stats: timing, tokens, logprob, finish reason",
         "memory": "show memory (USER/MEMORY/PROJECT) · /memory edit <scope>",
         "review": "code-review the git diff (/review [ref])",
         "security-review": "security-review the git diff (/security-review [ref])",
@@ -2133,17 +2337,45 @@ class HarnessApp(App):
 
     def _slash_catalog(self) -> list[tuple[str, str]]:
         cmds = list(self._SLASH_HELP.items())
+        reg = self._command_registry()
+        cmds += [
+            (n, (reg[n].description or "file-authored command"))
+            for n in sorted(reg)
+        ]
         cmds += [
             (n, "grammar skill — guaranteed-valid output")
             for n in sorted(self._skill_names())
         ]
         return cmds
 
+    _PROMPT_PLACEHOLDER = "Ask the harness  ·  /help for commands  ·  ^u usage  ·  ^o connect"
+    _SHELL_PLACEHOLDER = "run a shell command…  ·  delete the ! to exit shell mode"
+
+    def _set_shell_mode(self, on: bool) -> None:
+        """Enter/leave `!` shell mode with an immediate, visible signal: green
+        input border + swapped placeholder + a ⚡ shell chip in the status bar."""
+        if on == self._shell_mode:
+            return
+        self._shell_mode = on
+        try:
+            box = self.query_one("#prompt", Input)
+            box.set_class(on, "shell-mode")
+            box.placeholder = self._SHELL_PLACEHOLDER if on else self._PROMPT_PLACEHOLDER
+        except Exception:
+            pass
+        self._update_status()
+
     def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "runsfilter":
+            self._runs_filter = event.value.strip().lower()
+            self._runs_state = None  # rebuild the table with the new filter
+            return
         if event.input.id != "prompt":
             return
-        menu = self.query_one("#slashmenu", OptionList)
         val = event.value
+        # `!` as the first character flips shell mode; deleting it exits.
+        self._set_shell_mode(val.startswith("!"))
+        menu = self.query_one("#slashmenu", OptionList)
         if val.startswith("/") and " " not in val:
             prefix = val[1:].lower()
             menu.clear_options()
@@ -2175,6 +2407,29 @@ class HarnessApp(App):
         menu.set_class(False, "visible")
 
     def on_key(self, event) -> None:
+        focused = self.focused
+        # History sidebar: '/' filters, 'r' renames (only while the table has focus,
+        # so typing in the prompt is never intercepted).
+        if focused is not None and focused.id == "runs":
+            if event.key == "slash":
+                pane = self.query_one("#runspane", Vertical)
+                pane.add_class("filtering")
+                self.query_one("#runsfilter", Input).focus()
+                event.prevent_default()
+                event.stop()
+                return
+            if event.key == "r":
+                self.action_rename_run()
+                event.prevent_default()
+                event.stop()
+                return
+        if focused is not None and focused.id == "runsfilter":
+            if event.key == "escape":  # clear the filter, back to the table
+                self._set_runs_filter("")
+                self.query_one("#runs", DataTable).focus()
+                event.prevent_default()
+                event.stop()
+                return
         menu = self.query_one("#slashmenu", OptionList)
         if menu.has_class("visible"):
             if event.key == "down":
@@ -2306,14 +2561,14 @@ class HarnessApp(App):
         elif cmd in ("help", "?"):
             self._write_help()
         elif cmd in ("agent", "mode"):
-            from ..agent.presets import PRESETS, get_preset
+            from ..agent.presets import all_preset_names, get_preset
 
-            if arg in PRESETS:
+            if arg in all_preset_names():
                 self._preset = get_preset(arg)
                 self._apply_preset()
                 self.notify(f"agent preset: {arg}")
             else:
-                self.notify(f"presets: {', '.join(PRESETS)}")
+                self.notify(f"presets: {', '.join(all_preset_names())}")
         elif cmd == "sessions":
             self.action_toggle_runs()  # browse/switch conversations
         elif cmd in ("rewind", "undo"):
@@ -2328,6 +2583,8 @@ class HarnessApp(App):
             self.action_usage()
         elif cmd in ("context", "ctx"):
             self.action_context()
+        elif cmd == "inspect":
+            self.action_inspect()
         elif cmd in ("memory", "mem"):
             self.action_memory(arg)
         elif cmd == "review":
@@ -2377,6 +2634,8 @@ class HarnessApp(App):
             self._blank = False
             self._follow = True
             self.run_worker(self._advantage_worker(cmd), exclusive=False)
+        elif cmd in self._command_names():
+            self.run_worker(self._run_custom_command(cmd, arg), exclusive=False)
         elif cmd in self._skill_names():
             self._blank = False
             self._follow = True
@@ -2407,6 +2666,8 @@ class HarnessApp(App):
             ("^C ^C", "press twice to quit (one press only arms it)"),
             ("^t", "history sidebar — browse / switch conversations"),
             ("Del / ^d", "delete the highlighted history run (^d for laptops)"),
+            ("/  (history)", "filter conversations by title / task"),
+            ("r  (history)", "rename the highlighted conversation"),
             ("^u", "usage & advantages — cost saved, determinism, confidence"),
             ("^r", "replay the active run (bit-exact determinism check)"),
             ("^g", "plan-fork — generate N candidate plans, ranked"),
@@ -2482,16 +2743,57 @@ class HarnessApp(App):
         self._follow = row == len(self._run_ids) - 1
         if rid != self.active:
             self._set_active(rid)
-        self.query_one(Input).focus()
+        # Opening a run means "take me to this conversation": close the sidebar and
+        # move to the prompt so you can type. (Delete keeps the sidebar open instead.)
+        self.query_one("#runspane", Vertical).remove_class("visible")
+        self.query_one("#prompt", Input).focus()
 
     def action_toggle_runs(self) -> None:
-        runs = self.query_one("#runs", DataTable)
-        runs.toggle_class("visible")
-        if runs.has_class("visible"):
-            runs.focus()
-            self.notify("conversations:  ↵ open  ·  Del delete  ·  ^t close", timeout=6)
+        pane = self.query_one("#runspane", Vertical)
+        pane.toggle_class("visible")
+        if pane.has_class("visible"):
+            self.query_one("#runs", DataTable).focus()
+            self.notify(
+                "conversations:  ↵ open  ·  Del delete  ·  / filter  ·  "
+                "r rename  ·  ^t close",
+                timeout=6,
+            )
         else:
-            self.query_one(Input).focus()
+            self._set_runs_filter("")
+            self.query_one("#prompt", Input).focus()
+
+    def _set_runs_filter(self, value: str) -> None:
+        """Apply a history filter: narrow the sidebar rows by substring over
+        title + task. Empty string clears the filter and hides the input."""
+        box = self.query_one("#runsfilter", Input)
+        pane = self.query_one("#runspane", Vertical)
+        self._runs_filter = value.strip().lower()
+        if not self._runs_filter and not value:
+            box.value = ""
+            pane.remove_class("filtering")
+        self._runs_state = None  # force the table to rebuild on the next tick
+
+    def action_rename_run(self) -> None:
+        """Rename the run highlighted in the history sidebar ('r' key)."""
+        runs = self.query_one("#runs", DataTable)
+        row = runs.cursor_row
+        if row is None or not (0 <= row < len(self._run_ids)):
+            return
+        rid = self._run_ids[row]
+        meta = self.event_log.run(rid)
+
+        def done(title: str | None) -> None:
+            if title is None:  # cancelled
+                return
+            self.event_log.rename_run(rid, title)
+            self._runs_state = None
+            self.notify(
+                f"renamed {rid[:8]} → {title}" if title.strip()
+                else f"cleared the name of {rid[:8]}"
+            )
+            self.query_one("#runs", DataTable).focus()
+
+        self.push_screen(RenameScreen(rid, meta.label if meta else ""), done)
 
     def action_replay(self) -> None:
         if self.server is not None:
@@ -2538,6 +2840,59 @@ class HarnessApp(App):
             learn_summary=self._learn_summary,
         )
         self.push_screen(OverlayScreen(panel, hint="↑↓ scroll · esc / ^u to close"))
+
+    def action_inspect(self) -> None:
+        """/inspect — the event log made visible: one row per model call of the
+        active run, with timing, tokens, logprob confidence, and finish reason."""
+        if not self.active:
+            self.notify("no active conversation to inspect")
+            return
+        events = self.event_log.events(self.active, MODEL_CALL)
+        if not events:
+            self.notify("no model calls yet in this conversation")
+            return
+        from rich.table import Table as RichTable
+
+        t = RichTable(
+            box=None, pad_edge=False, header_style="bold " + render.C_DIM
+        )
+        for col in ("call", "seed", "time", "tokens in→out", "logprob", "finish", ""):
+            t.add_column(col, no_wrap=True)
+        tin_total = tout_total = 0
+        for ev in events:
+            p = ev.payload
+            tin, tout = render.tokens_of(p)
+            tin_total, tout_total = tin_total + tin, tout_total + tout
+            choice = ((p.get("response") or {}).get("choices") or [{}])[0]
+            msg = choice.get("message") or {}
+            s = p.get("logprob_summary") or {}
+            lp = s.get("mean_logprob")
+            content = (msg.get("content") or "").strip().replace("\n", " ")
+            n_tools = len(msg.get("tool_calls") or [])
+            preview = content[:36] or (f"→ {n_tools} tool call(s)" if n_tools else "")
+            t.add_row(
+                str(p.get("call_index", ev.seq)),
+                str(p.get("seed", "—")),
+                f"{(p.get('timing_ms') or 0) / 1000:.1f}s",
+                f"{tin} → {tout}" if (tin or tout) else "—",
+                Text(f"{lp:+.2f}", style=render.confidence_style(lp))
+                if lp is not None else Text("—", style=render.C_DIM),
+                choice.get("finish_reason") or "?",
+                Text(preview, style=render.C_DIM),
+            )
+        t.add_section()
+        t.add_row(
+            f"{len(events)}", "", "",
+            Text(f"{tin_total} → {tout_total}", style="bold"), "", "", "",
+        )
+        panel = Panel(
+            t,
+            title=f"inspect — run {self.active[:8]} · what each model call cost",
+            title_align="left",
+            border_style=render.B_ACCENT,
+            padding=(1, 2),
+        )
+        self.push_screen(OverlayScreen(panel, hint="↑↓ scroll · esc to close"))
 
     # --- theming ---------------------------------------------------------
 
@@ -2981,7 +3336,8 @@ class HarnessApp(App):
     def action_delete_run(self) -> None:
         """Delete the run highlighted in the history sidebar (Delete key)."""
         runs = self.query_one("#runs", DataTable)
-        if not runs.has_class("visible"):
+        pane = self.query_one("#runspane", Vertical)
+        if not pane.has_class("visible"):
             return
         row = runs.cursor_row
         if row is None or not (0 <= row < len(self._run_ids)):
@@ -2989,8 +3345,12 @@ class HarnessApp(App):
         rid = self._run_ids[row]
         self.event_log.delete_run(rid)
         if rid == self.active:
-            self.action_new()
-        self._runs_state = []  # force the table to rebuild on the next tick
+            self.action_new()  # clears the view + focuses Input…
+        self._runs_state = None  # force the table to rebuild on the next tick
+        # …but delete is a repeatable action: keep the sidebar open and focused so
+        # you can delete the next run without closing and reopening it.
+        if pane.has_class("visible"):
+            runs.focus()
         self.notify(f"deleted run {rid[:8]}")
 
     def action_new(self) -> None:
@@ -3006,7 +3366,7 @@ class HarnessApp(App):
         self.query_one(RichLog).clear()
         self.query_one("#live", Static).update("")
         self._maybe_welcome()
-        self.query_one(Input).focus()
+        self.query_one("#prompt", Input).focus()
 
     # --- read-side polling ----------------------------------------------
 
@@ -3074,15 +3434,25 @@ class HarnessApp(App):
 
     def _tick(self) -> None:
         runs = self.event_log.runs()
-        state = [(r.run_id, r.status, r.task) for r in runs]
+        state = [(r.run_id, r.status, r.label) for r in runs]
         if state != self._runs_state:
             self._runs_state = state
-            self._run_ids = [r.run_id for r in runs]
+            # The sidebar shows only rows matching the history filter (substring
+            # over the user's title AND the task), but state/status tracking above
+            # stays unfiltered so the app never loses sight of the active run.
+            f = self._runs_filter
+            visible = [
+                r for r in runs
+                if not f or f in r.label.lower() or f in r.task.lower()
+            ]
+            self._run_ids = [r.run_id for r in visible]
             self._stats_dirty = True
             table = self.query_one(DataTable)
             table.clear()
-            for rid, status, task in state:
-                table.add_row(rid[:8], status_text(status), task[:24], key=rid)
+            for r in visible:
+                table.add_row(
+                    r.run_id[:8], status_text(r.status), r.label[:24], key=r.run_id
+                )
             if (
                 not self._blank
                 and self._follow

@@ -100,9 +100,11 @@ def test_set_palette_swaps_all_globals():
         assert render.JADE == "#b8bb26"
         assert render._SEP[1] == render.THEMES["gruvbox"].grey
         assert render._CTX_COLORS["task"] == render.THEMES["gruvbox"].gold
-        # light theme uses dark text (foreground) on a light background
+        # light theme uses dark text (foreground) on a light background —
+        # osaka-jade.json's real lightFg0 (#111c18) on lightBg0 (#f6f5dd)
         render.set_palette(render.THEMES["osaka-light"])
-        assert render.C_ANSWER == "#2a2620"
+        assert render.C_ANSWER == "#111c18"
+        assert render.PALETTE.bg == "#f6f5dd"
     finally:
         render.set_palette(render.THEMES["osaka-jade"])  # restore default for other tests
 

@@ -19,12 +19,38 @@ from ..inference.client import OpenAICompatClient
 from ..skills.skill import SkillNotFound
 
 
+# Persistent defaults, shared with the TUI (which also keeps theme/vim here).
+# Precedence everywhere: explicit flag > environment variable > config > builtin.
+_CONFIG_PATH = os.path.expanduser("~/.harness/config.json")
+_CONFIG_KEYS = ("url", "model", "db", "preset", "skills_dir", "theme", "vim")
+
+
+def _config() -> dict:
+    try:
+        with open(_CONFIG_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _opt(key: str, env: str, fallback=None):
+    """A flag's default: the env var if set, else the config file, else builtin."""
+    return os.environ.get(env) or _config().get(key) or fallback
+
+
+def _version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("lo-agent")
+    except Exception:
+        return "unknown"
+
+
 def _add_common(p: argparse.ArgumentParser) -> None:
-    p.add_argument(
-        "--url", default=os.environ.get("HARNESS_BASE_URL", "http://localhost:8080")
-    )
-    p.add_argument("--model", default=os.environ.get("HARNESS_MODEL", ""))
-    p.add_argument("--db", default=os.environ.get("HARNESS_DB", "harness.db"))
+    p.add_argument("--url", default=_opt("url", "HARNESS_BASE_URL", "http://localhost:8080"))
+    p.add_argument("--model", default=_opt("model", "HARNESS_MODEL", ""))
+    p.add_argument("--db", default=_opt("db", "HARNESS_DB", "harness.db"))
 
 
 async def _client(args) -> OpenAICompatClient:
@@ -509,11 +535,297 @@ def cmd_tui(args) -> None:
             embedded.should_exit = True
 
 
+def _ago(ts: float) -> str:
+    import time
+
+    d = max(0.0, time.time() - ts)
+    for unit, secs in (("w", 604800), ("d", 86400), ("h", 3600), ("m", 60)):
+        if d >= secs:
+            return f"{int(d // secs)}{unit} ago"
+    return "just now"
+
+
+def _parse_since(text: str) -> float:
+    import re
+    import time
+    from datetime import datetime
+
+    m = re.fullmatch(r"(\d+)([mhdw])", text.strip())
+    if m:
+        mult = {"m": 60, "h": 3600, "d": 86400, "w": 604800}[m.group(2)]
+        return time.time() - int(m.group(1)) * mult
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        raise SystemExit(
+            f"--since wants 45m / 2h / 3d / 1w or an ISO date, not {text!r}"
+        )
+
+
 def cmd_runs(args) -> None:
+    import shutil
+
     log = EventLog(args.db)
-    for r in log.runs():
-        n = len(log.events(r.run_id))
-        print(f"{r.run_id}  {r.status:<10} {n:>4} events  {r.task[:60]}")
+    rows = log.runs()
+    if args.status:
+        rows = [r for r in rows if r.status == args.status]
+    if args.search:
+        needle = args.search.lower()
+        rows = [
+            r for r in rows
+            if needle in (r.title or "").lower() or needle in r.task.lower()
+        ]
+    if args.since:
+        cutoff = _parse_since(args.since)
+        rows = [r for r in rows if r.created_at >= cutoff]
+    if args.limit:
+        rows = rows[-args.limit:]
+    if args.json:
+        print(json.dumps(
+            [
+                {
+                    "run_id": r.run_id,
+                    "status": r.status,
+                    "title": r.title,
+                    "task": r.task,
+                    "created_at": r.created_at,
+                    "events": log.event_count(r.run_id),
+                }
+                for r in rows
+            ],
+            indent=2,
+        ))
+        return
+    width = shutil.get_terminal_size((100, 24)).columns
+    for r in rows:
+        n = log.event_count(r.run_id)
+        head = f"{r.run_id}  {r.status:<10} {_ago(r.created_at):>11}  {n:>4} events  "
+        print(head + r.label[: max(8, width - len(head))])
+
+
+def cmd_config(args) -> None:
+    """Persistent defaults in ~/.harness/config.json — the same file the TUI
+    keeps its theme/vim settings in, so both surfaces share one config."""
+    cfg = _config()
+    if args.action == "show":
+        if not cfg:
+            print(f"(empty — try: lo config set url http://…)  [{_CONFIG_PATH}]")
+            return
+        for k in sorted(cfg):
+            print(f"{k} = {json.dumps(cfg[k])}")
+        return
+    if not args.key or args.key not in _CONFIG_KEYS:
+        raise SystemExit(
+            f"unknown key {args.key!r} — one of: {', '.join(_CONFIG_KEYS)}"
+        )
+    if args.action == "get":
+        print(json.dumps(cfg.get(args.key)))
+        return
+    if args.action == "unset":
+        cfg.pop(args.key, None)
+    else:  # set
+        if args.value is None:
+            raise SystemExit("usage: lo config set <key> <value>")
+        cfg[args.key] = {"true": True, "false": False}.get(
+            args.value.lower(), args.value
+        )
+    os.makedirs(os.path.dirname(_CONFIG_PATH), exist_ok=True)
+    with open(_CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+    shown = "unset" if args.action == "unset" else f"= {json.dumps(cfg.get(args.key))}"
+    print(f"{args.key} {shown}  [{_CONFIG_PATH}]")
+
+
+async def cmd_doctor(args) -> None:
+    """Diagnose the setup — config, upstream, model, capabilities, event log,
+    sandbox — with a fix suggestion per failure. Exits 1 if a required check fails."""
+    import shutil
+    import sqlite3
+    from pathlib import Path
+
+    failures = 0
+
+    def report(ok: bool, name: str, detail: str, fix: str | None = None,
+               required: bool = True) -> None:
+        nonlocal failures
+        mark = "✓" if ok else ("✗" if required else "–")
+        print(f"  {mark} {name:<16} {detail}")
+        if not ok and fix:
+            print(f"      ↳ {fix}")
+        if not ok and required:
+            failures += 1
+
+    print(f"lo doctor  (lo {_version()})")
+    if os.path.exists(_CONFIG_PATH):
+        try:
+            with open(_CONFIG_PATH) as f:
+                json.load(f)
+            report(True, "config", _CONFIG_PATH)
+        except Exception as e:
+            report(False, "config", f"unparseable: {e}",
+                   f"fix or delete {_CONFIG_PATH}")
+    else:
+        report(True, "config", "none (builtin defaults apply)")
+
+    upstream_ok, models = False, []
+    try:
+        async with httpx.AsyncClient(timeout=5) as http:
+            r = await http.get(args.url.rstrip("/") + "/v1/models")
+            r.raise_for_status()
+            models = [m.get("id", "?") for m in r.json().get("data", [])]
+        upstream_ok = True
+        report(True, "upstream", f"{args.url} is up")
+    except Exception as e:
+        report(False, "upstream", f"{args.url} unreachable ({type(e).__name__})",
+               "start llama.cpp/vLLM there, `lo config set url <URL>`, "
+               "or `lo quickstart` to auto-find one")
+
+    if upstream_ok:
+        if args.model or models:
+            listed = ", ".join(models[:3]) + ("…" if len(models) > 3 else "")
+            report(True, "model", args.model or f"{len(models)} on server: {listed}")
+        else:
+            report(False, "model", "server lists no models",
+                   "load a model, or pass --model / `lo config set model <name>`")
+    if upstream_ok and (args.model or models):
+        try:
+            async with await _client(args) as client:
+                caps = await probe(client)
+            report(True, "capabilities", f"tier {caps.tier()} ({caps.server})")
+        except Exception as e:
+            report(False, "capabilities", f"probe failed: {type(e).__name__}: {e}",
+                   "the server lists models but chat completions fail — check it "
+                   "serves the OpenAI chat API", required=False)
+
+    try:
+        log = EventLog(args.db)
+        n = len(log.runs())
+        log.close()
+        report(True, "event log",
+               f"{args.db} writable · {n} runs · sqlite {sqlite3.sqlite_version}")
+    except Exception as e:
+        report(False, "event log", f"{args.db}: {e}",
+               "check the path is writable (--db / HARNESS_DB / `lo config set db`)")
+
+    kvm = Path("/dev/kvm").exists()
+    msb = bool(shutil.which("msb"))
+    try:
+        import microsandbox  # noqa: F401
+
+        sdk = True
+    except Exception:
+        sdk = False
+    ready = kvm and msb and sdk
+    report(ready, "microVM sandbox",
+           "ready" if ready else "not installed (bash tools run on the host)",
+           "optional — `lo sandbox install` for isolation", required=False)
+
+    print("\n  all good" if failures == 0 else f"\n  {failures} problem(s) found")
+    if failures:
+        raise SystemExit(1)
+
+
+def cmd_completion(args) -> None:
+    """Emit a tab-completion script generated from the live argparse tree, so it
+    never goes stale. Install: eval \"$(lo completion bash)\" in ~/.bashrc (zsh:
+    ~/.zshrc; fish: lo completion fish > ~/.config/fish/completions/lo.fish)."""
+    parser = build_parser()
+    spa = next(
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    flags = {
+        name: sorted({
+            o for act in sp._actions for o in act.option_strings
+            if o.startswith("--")
+        })
+        for name, sp in spa.choices.items()
+    }
+    helps = {ca.dest: (ca.help or "").replace("'", "") for ca in spa._choices_actions}
+    names = " ".join(flags)
+
+    if args.shell == "bash":
+        cases = "\n".join(
+            f'    {name}) COMPREPLY=($(compgen -W "{" ".join(fl)}" -- "$cur"));;'
+            for name, fl in flags.items()
+        )
+        print(f"""# lo bash completion — eval "$(lo completion bash)"
+_lo_complete() {{
+  local cur=${{COMP_WORDS[COMP_CWORD]}} cmd=${{COMP_WORDS[1]}}
+  if [ "$COMP_CWORD" -eq 1 ]; then
+    COMPREPLY=($(compgen -W "{names}" -- "$cur")); return
+  fi
+  case "$cmd" in
+{cases}
+  esac
+}}
+complete -o default -F _lo_complete lo""")
+    elif args.shell == "zsh":
+        cmds = "\n".join(
+            f"    '{name}:{helps.get(name, '')}'" for name in flags
+        )
+        cases = "\n".join(
+            f"    {name}) compadd -- {' '.join(fl)};;" for name, fl in flags.items()
+        )
+        print(f"""# lo zsh completion — eval "$(lo completion zsh)"
+_lo() {{
+  local -a _lo_cmds
+  _lo_cmds=(
+{cmds}
+  )
+  if (( CURRENT == 2 )); then
+    _describe 'lo command' _lo_cmds; return
+  fi
+  case ${{words[2]}} in
+{cases}
+  esac
+}}
+compdef _lo lo""")
+    else:  # fish
+        lines = ["# lo fish completion — lo completion fish > "
+                 "~/.config/fish/completions/lo.fish",
+                 "complete -c lo -f"]
+        for name in flags:
+            desc = helps.get(name, "").replace('"', "")
+            lines.append(
+                f'complete -c lo -n "__fish_use_subcommand" -a {name} -d "{desc}"'
+            )
+            for f in flags[name]:
+                lines.append(
+                    f'complete -c lo -n "__fish_seen_subcommand_from {name}" '
+                    f"-l {f.removeprefix('--')}"
+                )
+        print("\n".join(lines))
+
+
+def cmd_diff(args) -> None:
+    """Diff two runs' transcripts — e.g. a replay against its original (the
+    determinism check, made visible). Exits 1 when they differ, like diff(1)."""
+    import difflib
+
+    from ..events.export import transcript_markdown
+
+    log = EventLog(args.db)
+    sides = []
+    for rid in (args.run_a, args.run_b):
+        if log.run(rid) is None:
+            raise SystemExit(f"no such run: {rid}")
+        sides.append(transcript_markdown(log, rid).splitlines())
+    lines = list(difflib.unified_diff(
+        sides[0], sides[1], fromfile=args.run_a, tofile=args.run_b, lineterm=""
+    ))
+    if not lines:
+        print(f"runs {args.run_a[:8]} and {args.run_b[:8]} have identical transcripts")
+        return
+    color = sys.stdout.isatty()
+    for ln in lines:
+        if color and ln.startswith("+") and not ln.startswith("+++"):
+            ln = f"\x1b[32m{ln}\x1b[0m"
+        elif color and ln.startswith("-") and not ln.startswith("---"):
+            ln = f"\x1b[31m{ln}\x1b[0m"
+        elif color and ln.startswith("@@"):
+            ln = f"\x1b[36m{ln}\x1b[0m"
+        print(ln)
+    raise SystemExit(1)
 
 
 def _aggregate_stats(log: EventLog) -> dict:
@@ -636,11 +948,15 @@ async def cmd_context(args) -> None:
     Console().print(render.context_panel(breakdown, window=window))
 
 
-def _build_session_app(args, sandbox, *, interactive_permissions: bool = False):
+def _build_session_app(
+    args, sandbox, *, interactive_permissions: bool = False, client_factory=None
+):
     """Construct the session-server Starlette app + manager, shared by `lo
     serve` and the TUI's embedded server. Startup probes the upstream resiliently
     (a failed probe leaves /health degraded rather than crashing the server).
-    `interactive_permissions` routes the ask tier to the client over the bus."""
+    `interactive_permissions` routes the ask tier to the client over the bus.
+    `client_factory(url, model)` overrides upstream client construction — the
+    seam the user-simulation tests use to splice in a mock model server."""
     from ..events.bus import EventBus
     from ..server.app import create_server_app
     from ..server.sessions import SessionManager
@@ -649,10 +965,14 @@ def _build_session_app(args, sandbox, *, interactive_permissions: bool = False):
     bus = EventBus(log)
     state: dict = {"url": args.url, "model": args.model}
 
-    from ..agent.presets import get_preset
+    from ..agent.presets import get_preset, register_file_presets
+
+    register_file_presets()  # so file-authored agents resolve by name server-side
 
     async def _auto_allow(_tool, _args):  # server has no interactive client yet:
         return True  # auto-approve the ask tier (deny still denies)
+
+    _shared_mem: dict = {}  # one sqlite Memory reused across turns (not per-turn)
 
     def factory(on_token, on_tool, on_notice, preset=None):
         # Apply the per-session preset so plan/explore are actually enforced
@@ -663,6 +983,25 @@ def _build_session_app(args, sandbox, *, interactive_permissions: bool = False):
         p = get_preset(preset or getattr(args, "preset", "build"))
         tools = ToolRegistry(builtin_tools(sandbox=sandbox))
         tools.permissions = p.permissions(approver=_auto_allow)
+        # Self-editing memory + read-only AGENTS.md, so the default (embedded-server)
+        # path gets the same frozen system_block the in-process TUI does. Built fresh
+        # per turn — cheap (file reads) and keeps the snapshot frozen at run start.
+        notebook = None
+        try:
+            from pathlib import Path as _Path
+
+            from ..agent.memory import Memory
+            from ..agent.notebook import Notebook, memory_tool, session_search_tool
+
+            mem_dir = _Path(getattr(args, "memory_dir", ".harness/memory"))
+            mem_dir.mkdir(parents=True, exist_ok=True)
+            notebook = Notebook(mem_dir, project_dir=str(_Path.cwd() / ".harness"))
+            if "mem" not in _shared_mem:  # open the sqlite handle once, reuse per turn
+                _shared_mem["mem"] = Memory(mem_dir / "memory.db")
+            tools.register(memory_tool(notebook))
+            tools.register(session_search_tool(_shared_mem["mem"]))
+        except Exception:
+            notebook = None  # memory is best-effort; never block a turn on it
         if state.get("client") is None:
             detail = f" ({state['error']})" if state.get("error") else ""
             raise RuntimeError(
@@ -677,6 +1016,7 @@ def _build_session_app(args, sandbox, *, interactive_permissions: bool = False):
             system_prompt=p.system_prompt,
             sampling=p.sampling,
             exposed_tools=p.exposed(),
+            notebook=notebook,
             max_steps=args.max_steps,
             guardrails_factory=_guardrails_factory(args, tools),
             context_budget=args.context_budget,
@@ -704,7 +1044,9 @@ def _build_session_app(args, sandbox, *, interactive_permissions: bool = False):
             except Exception:
                 pass
         try:
-            client = OpenAICompatClient(state["url"], state["model"])
+            client = (client_factory or OpenAICompatClient)(
+                state["url"], state["model"]
+            )
             # Reachability first: probe() tolerates missing endpoints by design,
             # so a dead host would otherwise "probe" fine as a generic tier.
             await client.get("/v1/models")
@@ -762,6 +1104,79 @@ def cmd_serve(args) -> None:
         f"lo serve: http://{args.host}:{args.port}  (open it in a browser for the web client)"
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+
+
+async def cmd_simulate(args) -> None:
+    """User-simulation from the CLI: play scripted journeys through the real
+    TUI in a pseudo-terminal against a live endpoint, printing per-step ✓/✗.
+    The pytest tiers (tests/test_e2e_*.py) run the same scenarios; this is the
+    'point it at a fleet box and watch it act like a user' button."""
+    import tempfile
+    from pathlib import Path
+
+    from ..sim import SCENARIOS
+    from ..sim.pty_driver import PtyTui, tui_command
+    from ..sim.scenario import ScenarioFailure, Step, run_scenario
+    from ..sim.scenarios import GREET_COMMAND_MD, scaled
+
+    if args.list or args.scenario == "list":
+        for name, sc in sorted(SCENARIOS.items()):
+            tag = "live" if sc.live_ok else "mock-only"
+            print(f"  {name:<24} [{tag:>9}]  {sc.description}")
+        return
+    if args.scenario == "all":
+        names = [n for n, s in sorted(SCENARIOS.items()) if s.live_ok]
+    elif args.scenario in SCENARIOS:
+        names = [args.scenario]
+    else:
+        raise SystemExit(
+            f"✗ unknown journey {args.scenario!r} — `lo simulate list` to enumerate"
+        )
+
+    failed: list[str] = []
+    for name in names:
+        scenario = scaled(SCENARIOS[name], args.scale)
+        workdir = Path(tempfile.mkdtemp(prefix=f"lo-sim-{name}-"))
+        cmd_dir = workdir / ".lo" / "commands"
+        cmd_dir.mkdir(parents=True)
+        (cmd_dir / "greet.md").write_text(GREET_COMMAND_MD)
+        record = args.record
+        if record and len(names) > 1:
+            record = f"{record.removesuffix('.cast')}.{name}.cast"
+        driver = PtyTui(
+            tui_command(args.url, str(workdir / "h.db"), model=args.model),
+            env={"HOME": str(workdir)},
+            cwd=str(workdir),
+            record_to=record,
+            title=f"lo simulate {name}",
+        )
+        print(f"▶ {name} — {scenario.description}")
+        try:
+            if not await driver.boot("local_harness", timeout=90):
+                raise ScenarioFailure(
+                    name, Step(label="boot"), "TUI never booted", driver.dump()
+                )
+            await run_scenario(
+                driver,
+                scenario,
+                on_step=lambda st, dt: print(
+                    f"    ✓ {st.label or st.keys.strip() or '(observe)'}  ({dt:.1f}s)"
+                ),
+            )
+            print(f"  ✓ {name}")
+        except ScenarioFailure as e:
+            screen_file = workdir / "failure-screen.txt"
+            screen_file.write_text(e.screen)
+            print(f"    ✗ {e.step.label or e.step.keys.strip()}: {e.reason}")
+            print(f"      screen saved to {screen_file}")
+            failed.append(name)
+        finally:
+            driver.close()
+            if record:
+                print(f"      cast: {record}")
+    if failed:
+        raise SystemExit(f"✗ {len(failed)}/{len(names)} failed: {', '.join(failed)}")
+    print(f"✓ {len(names)} journey{'s' if len(names) != 1 else ''} passed")
 
 
 def _free_port() -> int:
@@ -995,6 +1410,9 @@ def cmd_daemon(args) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lo")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {_version()}"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("quickstart", help="auto-find a local server and launch the TUI")
@@ -1013,7 +1431,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("bench", help="measure lo-agent's advantages vs frontier APIs")
     _add_common(p)
-    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS"))
+    p.add_argument("--skills-dir", default=_opt("skills_dir", "HARNESS_SKILLS"))
     p.add_argument("--n", type=int, default=8, help="samples per bench (default 8)")
     p.add_argument(
         "--no-batch-invariance",
@@ -1085,7 +1503,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("tui", help="interactive TUI: live run viewer + task launcher")
     _add_common(p)
     _add_agent_flags(p)
-    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS"))
+    p.add_argument("--skills-dir", default=_opt("skills_dir", "HARNESS_SKILLS"))
     p.add_argument(
         "--tools",
         default=os.environ.get("HARNESS_TOOLS", "tools.json"),
@@ -1109,7 +1527,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--preset",
-        default="build",
+        default=_opt("preset", "HARNESS_PRESET", "build"),
         help="agent preset: build | plan | explore | general",
     )
     p.add_argument(
@@ -1145,7 +1563,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8099)
     p.add_argument(
         "--preset",
-        default="build",
+        default=_opt("preset", "HARNESS_PRESET", "build"),
         help="default agent preset when a session request omits one "
         "(build | plan | explore | general)",
     )
@@ -1189,10 +1607,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="model-call index to fork at (default: the last/answer call)",
     )
     p.add_argument("--seed", type=int, default=None, help="override the seed")
-    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS"))
+    p.add_argument("--skills-dir", default=_opt("skills_dir", "HARNESS_SKILLS"))
 
     p = sub.add_parser("runs", help="list runs in the event log")
     _add_common(p)
+    p.add_argument("--status", choices=["running", "completed", "failed"])
+    p.add_argument("--search", help="substring match over task / title")
+    p.add_argument("--since", help="only runs newer than 45m / 2h / 3d / 1w or an ISO date")
+    p.add_argument("--limit", type=int, help="show only the newest N matching runs")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+
+    p = sub.add_parser(
+        "config",
+        help="persistent defaults (url / model / db / preset) in ~/.harness/config.json",
+    )
+    p.add_argument(
+        "action", nargs="?", choices=["show", "get", "set", "unset"], default="show"
+    )
+    p.add_argument("key", nargs="?")
+    p.add_argument("value", nargs="?")
+
+    p = sub.add_parser(
+        "doctor", help="diagnose the setup: server, model, event log, sandbox"
+    )
+    _add_common(p)
+
+    p = sub.add_parser(
+        "completion", help="shell tab-completion script (bash / zsh / fish)"
+    )
+    p.add_argument("shell", choices=["bash", "zsh", "fish"])
+
+    p = sub.add_parser(
+        "diff", help="diff two runs' transcripts (e.g. a replay vs its original)"
+    )
+    p.add_argument("--db", default=_opt("db", "HARNESS_DB", "harness.db"))
+    p.add_argument("run_a")
+    p.add_argument("run_b")
 
     p = sub.add_parser(
         "context", help="show a run's context-window usage (token breakdown)"
@@ -1205,7 +1655,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "rewind", help="roll a run back to an earlier point (lossless; tail archived)"
     )
-    p.add_argument("--db", default=os.environ.get("HARNESS_DB", "harness.db"))
+    p.add_argument("--db", default=_opt("db", "HARNESS_DB", "harness.db"))
     p.add_argument("run_id")
     p.add_argument(
         "--seq",
@@ -1215,15 +1665,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p = sub.add_parser("cost", help="$ saved vs a frontier API across logged runs")
-    p.add_argument("--db", default=os.environ.get("HARNESS_DB", "harness.db"))
+    p.add_argument("--db", default=_opt("db", "HARNESS_DB", "harness.db"))
 
     p = sub.add_parser(
         "usage", help="token / cost / resample summary across logged runs"
     )
-    p.add_argument("--db", default=os.environ.get("HARNESS_DB", "harness.db"))
+    p.add_argument("--db", default=_opt("db", "HARNESS_DB", "harness.db"))
 
     p = sub.add_parser("export", help="write a run's transcript to run-<id>.md")
-    p.add_argument("--db", default=os.environ.get("HARNESS_DB", "harness.db"))
+    p.add_argument("--db", default=_opt("db", "HARNESS_DB", "harness.db"))
     p.add_argument("run_id", nargs="?", help="run to export (default: the most recent)")
     p.add_argument(
         "--stdout",
@@ -1237,7 +1687,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     p.add_argument("skill_name")
     p.add_argument("prompt", nargs="?", default="")
-    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS"))
+    p.add_argument("--skills-dir", default=_opt("skills_dir", "HARNESS_SKILLS"))
     p.add_argument("--seed", type=int, default=1)
 
     p = sub.add_parser(
@@ -1270,14 +1720,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--url",
-        default=os.environ.get("HARNESS_BASE_URL", "http://localhost:8080"),
+        default=_opt("url", "HARNESS_BASE_URL", "http://localhost:8080"),
         help="upstream model server",
     )
-    p.add_argument("--model", default=os.environ.get("HARNESS_MODEL", ""))
+    p.add_argument("--model", default=_opt("model", "HARNESS_MODEL", ""))
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8088)
     p.add_argument("--db", default="proxy.db")
-    p.add_argument("--skills-dir", default=os.environ.get("HARNESS_SKILLS"))
+    p.add_argument("--skills-dir", default=_opt("skills_dir", "HARNESS_SKILLS"))
     p.add_argument("--skill", help="default grammar skill applied to every request")
     p.add_argument(
         "--samplers", help='JSON sampler settings, e.g. \'{"min_p": 0.05, "dry": {}}\''
@@ -1287,6 +1737,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--think-budget", type=int)
     p.add_argument("--no-rescue", action="store_true")
     p.add_argument("--max-internal-retries", type=int, default=2)
+
+    p = sub.add_parser(
+        "simulate",
+        help="drive scripted user journeys through the real TUI (in a PTY) "
+        "against a live model endpoint",
+    )
+    p.add_argument(
+        "scenario",
+        nargs="?",
+        default="list",
+        help="a journey name, 'all' (every live-capable journey), or 'list'",
+    )
+    p.add_argument(
+        "--url",
+        default=_opt("url", "HARNESS_BASE_URL", "http://localhost:8080"),
+        help="model endpoint the TUI's embedded server talks to",
+    )
+    p.add_argument("--model", default=_opt("model", "HARNESS_MODEL", ""))
+    p.add_argument("--record", help="write an asciicast v2 of the run to this path")
+    p.add_argument(
+        "--scale",
+        type=float,
+        default=8.0,
+        help="step-timeout multiplier over the mock-tier defaults (default 8)",
+    )
+    p.add_argument("--list", action="store_true", help="list available journeys")
 
     return parser
 
@@ -1303,6 +1779,10 @@ _HANDLERS = {
     "replay": cmd_replay,
     "replay-tuned": cmd_replay_tuned,
     "runs": cmd_runs,
+    "config": cmd_config,
+    "doctor": cmd_doctor,
+    "completion": cmd_completion,
+    "diff": cmd_diff,
     "context": cmd_context,
     "rewind": cmd_rewind,
     "cost": cmd_cost,
@@ -1315,6 +1795,7 @@ _HANDLERS = {
     "tui": cmd_tui,
     "serve": cmd_serve,
     "tail": cmd_tail,
+    "simulate": cmd_simulate,
 }
 
 

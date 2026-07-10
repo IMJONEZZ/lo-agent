@@ -267,6 +267,48 @@ async def test_app_undo_aliases_rewind(tmp_path):
         assert len(app.event_log.runs()) == runs_before + 1   # tail archived as a new run (lossless)
 
 
+async def test_history_delete_keeps_table_focused(tmp_path):
+    # Deleting a run must keep the history sidebar open AND focused, so you can
+    # delete the next one without closing/reopening (the reported lockup).
+    db = str(tmp_path / "h.db")
+    r1 = seed_old_run(db)
+    r2 = seed_old_run(db)
+    app = make_app(db, MockLlamaCpp(script={424242: chat_response(content="p")}))
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(app._caps_ready.wait(), timeout=5)
+        await pilot.pause()
+        runs = app.query_one("#runs", DataTable)
+        pane = app.query_one("#runspane")
+        app.action_toggle_runs()          # ^t → open sidebar
+        await pilot.pause()
+        assert pane.has_class("visible") and app.focused is runs
+        before = len(app.event_log.runs())
+        app.action_delete_run()           # delete the highlighted run
+        await pilot.pause()
+        assert len(app.event_log.runs()) == before - 1
+        # still open, still focused → a second delete works immediately
+        assert pane.has_class("visible") and app.focused is runs
+        assert r1 in (r1, r2)  # (both were valid run ids)
+
+
+async def test_history_open_closes_sidebar(tmp_path):
+    # Opening a run closes the sidebar and returns focus to the prompt.
+    db = str(tmp_path / "h.db")
+    seed_old_run(db)
+    app = make_app(db, MockLlamaCpp(script={424242: chat_response(content="p")}))
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(app._caps_ready.wait(), timeout=5)
+        await pilot.pause()
+        pane = app.query_one("#runspane")
+        app.action_toggle_runs()
+        await pilot.pause()
+        assert pane.has_class("visible")
+        await pilot.press("enter")        # open the highlighted run
+        await pilot.pause()
+        assert not pane.has_class("visible")
+        assert isinstance(app.focused, Input)
+
+
 async def test_app_runs_skill_via_slash(tmp_path):
     db = str(tmp_path / "h.db")
     # the skill generates at seed 1; grammar-constrained 'yes_no' accepts "yes"

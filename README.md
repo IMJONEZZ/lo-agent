@@ -99,6 +99,11 @@ agent run; the transcript follows it live. Agent flags (`--required-steps`,
 `--terminal-tool`, `--no-guardrails`, `--context-budget`, `--max-steps`) work
 exactly as they do for `lo run`.
 
+In the `^t` history sidebar, `/` filters conversations and `r` renames the
+highlighted one (titles show up in `lo runs` too). `/inspect` opens per-model-call
+stats — timing, tokens, logprob confidence, finish reason — straight from the
+event log. `/help` lists everything.
+
 ## Proxy
 
 ```bash
@@ -144,10 +149,12 @@ lo probe --url http://localhost:8080
 # Run an agent task (event-sourced; every model call logged with its seed)
 lo run "Use the calculator tool to compute 17*23 plus 100."
 
-# List runs, resume a crashed run, or verify a run replays bit-identically
-lo runs
+# List runs (filter/search/JSON), resume a crashed run, verify a bit-identical
+# replay, or diff two runs' transcripts (a replay against its original)
+lo runs --status failed --since 2h --search banana --json
 lo resume <run-id>
 lo replay <run-id>
+lo diff <run-id> <run-id>
 
 # Grammar skills: guaranteed-valid output, server-constrained where possible
 lo skill list
@@ -163,7 +170,17 @@ Tip: start llama.cpp with `--slot-save-path /some/dir` to unlock true KV-state
 snapshots (tree forks restore exactly instead of relying on prefix cache).
 
 `--url/--model/--db` or `HARNESS_BASE_URL`/`HARNESS_MODEL`/`HARNESS_DB` select the
-endpoint and event-log database (default `harness.db`).
+endpoint and event-log database (default `harness.db`). Set them once instead with
+`lo config set url http://…` (`~/.harness/config.json`, shared with the TUI);
+precedence is flag > env > config.
+
+More setup helpers:
+
+```bash
+lo doctor                    # diagnose: config, server, model, event log, sandbox
+lo completion bash           # tab completion — eval "$(lo completion bash)" (zsh/fish too)
+lo --version
+```
 
 ## Layout
 
