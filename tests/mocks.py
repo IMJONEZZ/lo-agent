@@ -101,6 +101,7 @@ class MockLlamaCpp:
         script: dict[int, dict[str, Any]] | None = None,
         fail_after: int | None = None,
         completion_fn=None,  # (prompt: str, body: dict) -> (text, finish_reason)
+        chat_fn=None,  # (body: dict) -> chat response dict; wins over `script`
         slot_save_enabled: bool = True,
         post_sampling: bool = False,  # server supports `post_sampling_probs`
     ):
@@ -109,6 +110,8 @@ class MockLlamaCpp:
         self.chat_calls = 0
         self.completion_calls = 0
         self.completion_fn = completion_fn
+        self.chat_fn = chat_fn
+        self.chat_bodies: list[dict[str, Any]] = []  # every chat request body, in order
         self.slot_save_enabled = slot_save_enabled
         self.post_sampling = post_sampling
         self.saved_slots: list[str] = []
@@ -154,9 +157,14 @@ class MockLlamaCpp:
                 raise httpx.ConnectError("mock server crashed")
             self.chat_calls += 1
             body = json.loads(request.content)
+            self.chat_bodies.append(body)
             seed = body.get("seed", 0)
-            resp = self.script[seed] if self.script is not None \
-                else chat_response(content=f"deterministic-{seed}")
+            if self.chat_fn is not None:
+                resp = self.chat_fn(body)
+            elif self.script is not None:
+                resp = self.script[seed]
+            else:
+                resp = chat_response(content=f"deterministic-{seed}")
             if self.post_sampling and body.get("post_sampling_probs"):
                 self.post_sampling_requests += 1
                 resp = _to_post_sampling_shape(resp)

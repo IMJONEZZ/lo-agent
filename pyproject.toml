@@ -60,3 +60,9 @@ packages = ["src/local_harness"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "e2e: user-simulation journey (Pilot + real session server + mock model); runs by default",
+    "pty: user-simulation smoke through a real PTY subprocess; opt in with -m pty",
+    "live: user-simulation against a real model endpoint (needs LO_LIVE_URL); opt in with -m live",
+]
+addopts = "-m 'not pty and not live'"
