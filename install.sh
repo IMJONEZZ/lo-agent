@@ -6,6 +6,10 @@
 # Installs the `lo` CLI with uv (bootstrapping uv itself if needed). No sudo,
 # nothing outside ~/.local and uv's own directories. Safe to re-run; it
 # upgrades in place.
+#
+# Uninstall (removes lo however it was installed; your data stays put):
+#
+#   curl -fsSL https://raw.githubusercontent.com/IMJONEZZ/lo-agent/main/install.sh | bash -s -- --uninstall
 
 set -euo pipefail
 
@@ -80,6 +84,60 @@ tier_unlock() {
     fi
   done
 }
+
+# tier_lock — the ladder, climbed back down.
+tier_lock() {
+  local tiers=(
+    "tier 3  KV tree search · fork & backtrack"
+    "tier 2  grammar skills · sampler zoo · think budgets"
+    "tier 1  bit-identical replay · logprob signals"
+    "tier 0  agent loop · event log · validate-and-retry"
+  )
+  printf '\n'
+  for t in "${tiers[@]}"; do
+    if [ "$TTY" -eq 1 ]; then
+      printf '  %s🔓%s %s' "$GOLD" "$R" "$t"; sleep 0.18
+      printf '\r  %s🔒%s %s%s%s\n' "$DIM" "$R" "$DIM" "$t" "$R"
+    else
+      printf '  🔒 %s\n' "$t"
+    fi
+  done
+}
+
+uninstall() {
+  banner
+  local removed=0
+  if command -v uv >/dev/null 2>&1 && uv tool list 2>/dev/null | grep -q '^lo-agent '; then
+    uv tool uninstall lo-agent >>"$LOG" 2>&1 &
+    spin $! "unhooking the harness (uv)…" || fail "uv tool uninstall failed"
+    step_done "uv tool removed"
+    removed=1
+  fi
+  if command -v brew >/dev/null 2>&1 && brew list lo-agent >/dev/null 2>&1; then
+    brew uninstall lo-agent >>"$LOG" 2>&1 &
+    spin $! "unhooking the harness (brew)…" || fail "brew uninstall failed"
+    step_done "brew formula removed  (drop the tap too: brew untap IMJONEZZ/lo-agent)"
+    removed=1
+  fi
+  if [ "$removed" -eq 0 ]; then
+    say "nothing to do — no uv-tool or brew install of lo found."
+    say "${DIM}(a from-source checkout is just its directory — delete the clone)${R}"
+    rm -f "$LOG"; exit 0
+  fi
+  tier_lock
+  printf '\n%syour data was left alone:%s\n' "$BOLD" "$R"
+  printf '  %s~/.harness/%s            config + memory — remove with: rm -rf ~/.harness\n' "$GOLD" "$R"
+  printf '  %sharness.db%s             per-project event logs, next to wherever you ran lo\n' "$GOLD" "$R"
+  printf '\n%sthe models were local all along. so long. 🦙%s\n\n' "$DIM" "$R"
+  rm -f "$LOG"
+  exit 0
+}
+
+case "${1:-}" in
+  --uninstall|uninstall) uninstall ;;
+  "") ;;
+  *) say "usage: install.sh [--uninstall]"; exit 2 ;;
+esac
 
 banner
 

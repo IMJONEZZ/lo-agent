@@ -249,3 +249,21 @@ a live box with `lo simulate <name|all> --url http://<host>:8080`.
 
 Live verification against a running llama.cpp server: `lo probe`, then `run` +
 `replay` — replay exits 0 only if the transcript hash matches.
+
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/IMJONEZZ/lo-agent/main/install.sh | bash -s -- --uninstall
+```
+
+Removes `lo` however it was installed (uv tool and/or brew) and tells you what
+it did. By hand instead:
+
+```bash
+uv tool uninstall lo-agent                              # one-liner / uv installs
+brew uninstall lo-agent && brew untap IMJONEZZ/lo-agent # brew installs
+```
+
+Your data is never touched by an uninstall: `~/.harness/` holds config and
+memory (`rm -rf ~/.harness` if you want it gone), and each project keeps its
+event log in a local `harness.db`.
