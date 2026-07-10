@@ -11,7 +11,17 @@ required; the model runs wherever your server does.
 
 ## Installation
 
-### uv (recommended)
+### One-liner
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/IMJONEZZ/lo-agent/main/install.sh | bash
+```
+
+Installs `lo` with uv (bootstrapping uv itself if needed), verifies it runs,
+and climbs the capability ladder on the way out. No sudo; nothing outside
+`~/.local` and uv's own directories. Re-run it any time to upgrade.
+
+### uv
 
 ```bash
 uv tool install "git+https://github.com/IMJONEZZ/lo-agent"
