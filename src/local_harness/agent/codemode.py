@@ -27,15 +27,50 @@ from .tools import ToolRegistry
 
 RUN_CODE_NAME = "run_code"
 
-# Builtins the model's code may use — no __import__/open/eval/exec/compile.
+# Pure-computation stdlib the model may import in-process (no I/O, no exec).
+# Models reflexively write `import re` / `import math` — refusing these buys no
+# safety and costs a failed round-trip; anything with I/O still goes via tools.
+_SAFE_MODULES = {
+    name: __import__(name)
+    for name in ("json", "re", "math", "statistics", "collections", "itertools",
+                 "functools", "textwrap", "datetime", "random", "string",
+                 "difflib", "asyncio")
+}
+
+
+def _safe_import(name, *args, **kwargs):
+    """__import__ restricted to _SAFE_MODULES; anything else fails with an
+    error that TEACHES (the real failure mode is a model retrying `import os`
+    forever against an opaque 'ImportError: __import__ not found')."""
+    root = name.partition(".")[0]
+    if root not in _SAFE_MODULES:
+        raise ImportError(
+            f"import {root!r} isn't available in code mode. Files, shell, and "
+            f"network go through the tools API instead — e.g. "
+            f"`await tools.list_dir('.')`, `await tools.read_file(path)`, "
+            f"`await tools.bash(command)`. "
+            f"Importable here: {', '.join(sorted(_SAFE_MODULES))}."
+        )
+    return __import__(name, *args, **kwargs)
+
+
+# Builtins the model's code may use — no open/eval/exec/compile; imports are
+# whitelisted through _safe_import.
 _SAFE_BUILTINS = {
     k: __builtins__[k] if isinstance(__builtins__, dict) else getattr(__builtins__, k)
     for k in ("abs", "all", "any", "bool", "dict", "enumerate", "filter", "float",
               "int", "len", "list", "map", "max", "min", "print", "range", "repr",
               "reversed", "round", "set", "sorted", "str", "sum", "tuple", "zip",
-              "True", "False", "None", "isinstance", "Exception")
+              "True", "False", "None", "isinstance", "issubclass", "getattr",
+              "hasattr", "type", "divmod", "pow", "ord", "chr", "hex", "oct",
+              "bin", "frozenset", "bytes", "bytearray", "iter", "next", "slice",
+              "format", "Exception", "BaseException", "ValueError", "TypeError",
+              "KeyError", "IndexError", "AttributeError", "RuntimeError",
+              "NameError", "ImportError", "StopIteration", "StopAsyncIteration",
+              "ZeroDivisionError", "ArithmeticError", "LookupError", "OSError")
     if (k in __builtins__ if isinstance(__builtins__, dict) else hasattr(__builtins__, k))
 }
+_SAFE_BUILTINS["__import__"] = _safe_import
 
 
 def api_reference(registry: ToolRegistry, exposed: set[str] | None) -> str:
@@ -63,10 +98,15 @@ def run_code_schema(reference: str) -> dict[str, Any]:
             "description": (
                 "Run Python to do the work. You have these tools (await every call):\n"
                 f"{reference}\n\n"
-                "Rules: `await` every tools.* call; chain as many as you like in one block; "
+                "Rules: `await` every tools.* call; positional or keyword args both work; "
+                "chain as many as you like in one block; "
                 "`print(...)` for logs; end with `return <value>` to report the result. "
                 "Namespaced tools: `await tools.ns.name(...)` or `await call(\"ns.name\", ...)`. "
-                "No imports/file access except through the tools."),
+                "Pure-Python imports are available (json, re, math, collections, "
+                "itertools, functools, textwrap, datetime, statistics, random, "
+                "string, difflib); everything with I/O (os, subprocess, open, "
+                "pathlib, requests, …) is NOT importable — use the tools for "
+                "files, shell, and network."),
             "parameters": {
                 "type": "object",
                 "properties": {"code": {"type": "string", "description": "the Python to run"}},
@@ -76,25 +116,77 @@ def run_code_schema(reference: str) -> dict[str, Any]:
     }
 
 
+def _params_of(registry: ToolRegistry, exposed: set[str] | None) -> dict[str, list[str]]:
+    """Ordered parameter names per tool, so code-mode can bind positional args to
+    them (the model naturally writes `tools.calculator("2+2")`, not keyword-only)."""
+    out: dict[str, list[str]] = {}
+    for schema in registry.schemas():
+        fn = schema["function"]
+        name = fn["name"]
+        if exposed is not None and name not in exposed:
+            continue
+        out[name] = list((fn.get("parameters") or {}).get("properties", {}).keys())
+    return out
+
+
+def _bind(name: str, params: dict[str, list[str]], args: tuple, kwargs: dict) -> dict:
+    """Merge positional args into kwargs using the tool's declared parameter order,
+    so both `tool(x, y)` and `tool(a=x, b=y)` work (models write both)."""
+    if not args:
+        return kwargs
+    names = params.get(name) or []
+    merged = dict(kwargs)
+    for i, val in enumerate(args):
+        if i >= len(names):
+            raise TypeError(
+                f"{name}() takes {len(names)} positional argument(s)"
+                f" [{', '.join(names) or 'none'}] but {len(args)} were given")
+        if names[i] in merged:
+            raise TypeError(f"{name}() got multiple values for argument '{names[i]}'")
+        merged[names[i]] = val
+    return merged
+
+
 class _Callable:
-    """`tools.web_search(...)` and dotted `tools.github.get_pr(...)` → execute()."""
+    """`tools.web_search(...)` and dotted `tools.github.get_pr(...)` → execute().
+    Accepts positional OR keyword args (bound via the tool's schema)."""
 
-    def __init__(self, execute, name: str):
-        self._execute, self._name = execute, name
+    def __init__(self, execute, name: str, params: dict[str, list[str]]):
+        self._execute, self._name, self._params = execute, name, params
 
-    async def __call__(self, **kwargs):
-        return await self._execute(self._name, kwargs)
+    async def __call__(self, *args, **kwargs):
+        return await self._execute(self._name, _bind(self._name, self._params, args, kwargs))
 
     def __getattr__(self, part: str) -> "_Callable":
-        return _Callable(self._execute, f"{self._name}.{part}")
+        return _Callable(self._execute, f"{self._name}.{part}", self._params)
 
 
 class _ToolNS:
-    def __init__(self, execute):
-        self._execute = execute
+    def __init__(self, execute, params: dict[str, list[str]]):
+        self._execute, self._params = execute, params
 
     def __getattr__(self, name: str) -> _Callable:
-        return _Callable(self._execute, name)
+        return _Callable(self._execute, name, self._params)
+
+
+def _model_traceback() -> str:
+    """The current exception's traceback with harness-internal frames stripped:
+    the model should see ITS code failing, not codemode.py plumbing (which it
+    misreads as harness breakage and retries the same code against)."""
+    out: list[str] = []
+    skipping = False
+    for ln in traceback.format_exc().splitlines():
+        if ln.startswith("  File "):
+            skipping = "<code-mode>" not in ln
+            if skipping:
+                continue
+        elif ln[:1].isspace():
+            if skipping:
+                continue
+        else:  # header / exception message — always shown
+            skipping = False
+        out.append(ln)
+    return "\n".join(out)
 
 
 def _format(result: Any, logs: str) -> str:
@@ -131,14 +223,15 @@ class CodeMode:
     # --- restricted in-process backend (host / default) ------------------
 
     async def _run_inprocess(self, code: str) -> str:
-        tools = _ToolNS(self._call_tool)
+        params = _params_of(self.registry, self.exposed)
+        tools = _ToolNS(self._call_tool, params)
 
-        async def _call(name, **kwargs):  # the dotted-name escape hatch
-            return await self._call_tool(name, kwargs)
+        async def _call(name, *args, **kwargs):  # the dotted-name escape hatch
+            return await self._call_tool(name, _bind(name, params, args, kwargs))
 
         g: dict[str, Any] = {
             "__builtins__": _SAFE_BUILTINS, "tools": tools, "call": _call,
-            "json": json, "asyncio": asyncio,
+            **_SAFE_MODULES,
         }
         src = "async def __codemode__():\n" + textwrap.indent(code or "pass", "    ")
         buf = io.StringIO()
@@ -149,7 +242,10 @@ class CodeMode:
         except asyncio.TimeoutError:
             return f"error: code timed out after {self.timeout}s\n{_format(None, buf.getvalue())}"
         except Exception:
-            return f"error while running your code:\n{traceback.format_exc()}\n{_format(None, buf.getvalue())}"
+            # "error:" prefix — the loop's tool-error budget keys on it, so a
+            # model stuck in a crash loop gets stopped instead of spinning.
+            return (f"error: your code raised:\n{_model_traceback()}\n"
+                    f"{_format(None, buf.getvalue())}")
         return _format(result, buf.getvalue())
 
     # --- microVM-bridged backend (hard isolation) ------------------------
@@ -166,7 +262,10 @@ class CodeMode:
         # (a host unlink+recreate can leave a stale "file gone" entry in the VM).
         run_dir = Path(self.sandbox.workdir) / ".codemode" / uuid.uuid4().hex[:12]
         run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "main.py").write_text(_VM_RUNTIME + "\n\n# --- user code ---\n"
+        params = _params_of(self.registry, self.exposed)
+        params_line = "_PARAMS = json.loads(%r)\n" % json.dumps(params)
+        (run_dir / "main.py").write_text(_VM_RUNTIME + "\n" + params_line
+                                         + "\n# --- user code ---\n"
                                          + "async def __user__():\n"
                                          + textwrap.indent(code or "pass", "    ")
                                          + "\n_run(__user__)\n")
@@ -209,6 +308,7 @@ _VM_RUNTIME = '''\
 import asyncio, json, os, time, traceback
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)))
 _n = 0
+_PARAMS = {}  # tool -> [param names]; overwritten by an injected line below
 
 def _rpc(name, kwargs):
     global _n; _n += 1; rid = _n
@@ -224,16 +324,27 @@ def _rpc(name, kwargs):
         time.sleep(0.01)
     raise TimeoutError("tool %s timed out" % name)
 
+def _bind(name, args, kw):
+    if not args: return kw
+    names = _PARAMS.get(name) or []
+    merged = dict(kw)
+    for i, val in enumerate(args):
+        if i >= len(names):
+            raise TypeError("%s() takes %d positional arg(s) but %d were given"
+                            % (name, len(names), len(args)))
+        merged[names[i]] = val
+    return merged
+
 class _Callable:
     def __init__(self, name): self._name = name
-    async def __call__(self, **kw): return _rpc(self._name, kw)
+    async def __call__(self, *a, **kw): return _rpc(self._name, _bind(self._name, a, kw))
     def __getattr__(self, p): return _Callable(self._name + "." + p)
 
 class _NS:
     def __getattr__(self, n): return _Callable(n)
 
 tools = _NS()
-async def call(name, **kw): return _rpc(name, kw)
+async def call(name, *a, **kw): return _rpc(name, _bind(name, a, kw))
 
 def _run(user):
     buf = []
@@ -246,7 +357,7 @@ def _run(user):
         result = asyncio.run(user())
     except Exception:
         builtins.print = _p
-        _p("error while running your code:\\n" + traceback.format_exc())
+        _p("error: your code raised:\\n" + traceback.format_exc())
         if buf: _p("[logs]\\n" + "".join(buf).rstrip())
         return
     builtins.print = _p

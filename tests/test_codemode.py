@@ -34,10 +34,67 @@ async def test_code_mode_chains_tools_in_one_block():
     assert '"sum": 54' in out and "[logs]" in out and "done" in out
 
 
+async def test_code_mode_positional_args():
+    # Models naturally write positional calls; they must bind to schema params,
+    # not raise TypeError (the bug that made code-mode burn turns retrying).
+    cm = CodeMode(_reg())
+    assert '"391"' in await cm.run('return await tools.calculator("17*23")')
+    # positional + keyword both work; and the dotted call() escape hatch too
+    assert '"65536"' in await cm.run('return await tools.calculator(expression="2**16")')
+    assert '"42"' in await cm.run('return await call("calculator", "6*7")')
+
+
+async def test_code_mode_too_many_positionals_errors():
+    cm = CodeMode(_reg())
+    out = await cm.run('return await tools.calculator("1", "2")')
+    assert "positional" in out and "error" in out
+
+
+async def test_code_mode_positional_multi_arg_tool(tmp_path):
+    cm = CodeMode(_reg())
+    p = tmp_path / "r.txt"
+    # write_file(path, content) by position, then read_file(path) by position
+    out = await cm.run(
+        f'await tools.write_file("{p}", "hi there")\n'
+        f'return await tools.read_file("{p}")')
+    assert "hi there" in out
+
+
 async def test_code_mode_restricts_namespace():
     cm = CodeMode(_reg())
     assert "error" in await cm.run("import os\nreturn os.listdir('/')")
     assert "error" in await cm.run("return open('/etc/passwd').read()")
+
+
+async def test_code_mode_import_error_teaches_the_tools_api():
+    # The real-session failure mode: a model writes `import os`, gets an opaque
+    # ImportError, and retries the identical code forever. The error must (a)
+    # start with "error:" so the loop's tool-error budget counts it, (b) point
+    # at the tools API, and (c) not leak harness-internal traceback frames.
+    cm = CodeMode(_reg())
+    out = await cm.run("import os\nreturn os.getcwd()")
+    assert out.startswith("error:")
+    assert "tools.list_dir" in out and "tools.read_file" in out
+    assert "codemode.py" not in out  # the model sees ITS code, not our plumbing
+
+
+async def test_code_mode_allows_pure_python_imports():
+    # `import re` / `import math` are what models reflexively write; refusing
+    # them buys no safety and costs a failed round-trip.
+    cm = CodeMode(_reg())
+    out = await cm.run(
+        "import re\nimport math\nfrom collections import Counter\n"
+        "c = Counter('aab')\n"
+        "return {'m': re.findall(r'\\d+', 'a1b22')[1], 'pi': round(math.pi, 2), "
+        "'top': c.most_common(1)[0][0]}")
+    assert '"m": "22"' in out and '"pi": 3.14' in out and '"top": "a"' in out
+
+
+async def test_code_mode_io_imports_stay_blocked():
+    cm = CodeMode(_reg())
+    for mod in ("os", "subprocess", "pathlib", "socket", "shutil", "sys"):
+        out = await cm.run(f"import {mod}\nreturn 1")
+        assert out.startswith("error:") and "isn't available in code mode" in out
 
 
 async def test_code_mode_enforces_exposed_tools():
