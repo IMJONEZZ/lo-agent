@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ..inference.types import SamplingParams
+from .frontmatter import split_frontmatter
 from .permissions import Permissions
 
 _READ_TOOLS = ["read_file", "list_dir", "grep", "glob", "session_search", "calculator"]
@@ -60,6 +62,7 @@ class AgentPreset:
     deny: list[str] = field(default_factory=list)
     default: str = "ask"
     tools: list[str] | None = None  # exposed toolset (None = all)
+    model: str | None = None  # per-agent model (recorded; switching not yet wired)
 
     def permissions(self, approver=None) -> Permissions:
         return Permissions(allow=list(self.allow), ask=list(self.ask), deny=list(self.deny),
@@ -98,5 +101,138 @@ PRESETS: dict[str, AgentPreset] = {
 }
 
 
+# --- file-authored agents (the OpenCode pattern) -------------------------------
+# A markdown file per agent; filename → preset name. Discovered from `.lo/agents/`
+# (project), `~/.lo/agents/` (user), and read-only `.opencode/agents/` interop.
+# Frontmatter → permissions/tools/sampling; body (or `prompt`) → system prompt.
+
+_FILE_PRESETS: dict[str, AgentPreset] = {}
+_PLAN_DENY = ["write_file", "edit_file", "bash", "webfetch", "web_search"]
+
+# The trusted read-only safety presets: a file-authored agent must never be able
+# to shadow these (an untrusted repo's `.lo/agents/plan.md` claiming write tools
+# would silently defeat plan/review mode), so we skip these names at load time.
+_RESERVED = frozenset({"plan", "explore", "review", "security-review"})
+
+# OpenCode uses shorter tool names than lo; translate them so an imported
+# `.opencode/agents` file (`tools: {write: true, bash: true}`) maps onto real tools.
+_OPENCODE_TOOLS = {
+    "write": "write_file",
+    "edit": "edit_file",
+    "read": "read_file",
+    "list": "list_dir",
+    "websearch": "web_search",
+}
+
+
+def agent_dirs() -> list[Path]:
+    return [Path(".lo/agents"), Path.home() / ".lo" / "agents", Path(".opencode/agents")]
+
+
+def _aslist(meta: dict, key: str) -> list[str]:
+    v = meta.get(key)
+    if v is None:
+        return []
+    if isinstance(v, dict):  # OpenCode's `tools: {write: true, edit: false}` map
+        return [str(k) for k, on in v.items() if on]
+    return [str(x) for x in v] if isinstance(v, list) else [str(v)]
+
+
+def _tool_name(name: str) -> str:
+    n = name.strip()
+    return _OPENCODE_TOOLS.get(n.lower(), n)
+
+
+def _tools(meta: dict, key: str) -> list[str] | None:
+    """Translated tool-name list, or None if the key is absent — so callers can
+    tell an explicit empty (`tools: []` → expose nothing) from "not set" (→ default)."""
+    if meta.get(key) is None:
+        return None
+    return [_tool_name(t) for t in _aslist(meta, key)]
+
+
+def _float_or(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _preset_from_meta(name: str, meta: dict, body: str) -> AgentPreset:
+    mode = str(meta.get("mode") or "build").lower()
+    read_only = mode in ("plan", "explore", "review", "security-review")
+
+    prompt = meta.get("prompt")
+    if isinstance(prompt, str) and prompt.startswith("{file:") and prompt.endswith("}"):
+        try:
+            prompt = Path(prompt[len("{file:") : -1].strip()).read_text()
+        except OSError:
+            prompt = ""
+    if not prompt:
+        prompt = body.strip() or (_PLAN_PROMPT if read_only else _BUILD_PROMPT)
+
+    # A non-numeric temperature falls back to the mode default rather than raising
+    # (a single bad file must not blow away every other file-authored agent).
+    sampling = SamplingParams(
+        temperature=_float_or(meta.get("temperature"), 0.1 if read_only else 0.2),
+        max_tokens=_MAX,
+    )
+    allow = _tools(meta, "allow")
+    if allow is None:
+        allow = list(_READ_TOOLS) if read_only else _READ_TOOLS + ["memory"]
+    deny = _tools(meta, "deny")
+    if deny is None:
+        deny = _PLAN_DENY if mode == "plan" else []
+    tools = _tools(meta, "tools")  # explicit `tools: []` → expose nothing; absent → default
+    if tools is None:
+        tools = list(_READ_TOOLS) if read_only else None
+    default = str(meta.get("default") or ("deny" if read_only else "ask"))
+    return AgentPreset(
+        name, str(prompt), sampling,
+        allow=allow, ask=(_tools(meta, "ask") or []), deny=deny,
+        default=default, tools=tools,
+        model=(str(meta["model"]) if meta.get("model") else None),
+    )
+
+
+def load_file_presets(dirs: list[Path] | None = None) -> dict[str, AgentPreset]:
+    dirs = dirs if dirs is not None else agent_dirs()
+    out: dict[str, AgentPreset] = {}
+    for d in dirs:
+        d = Path(d)
+        if not d.is_dir():
+            continue
+        for p in sorted(d.glob("*.md")):
+            name = p.stem.lower()
+            if name in _RESERVED:  # never let a file shadow a trusted read-only preset
+                continue
+            if name in out:  # higher-priority dir already claimed the name
+                continue
+            try:
+                meta, body = split_frontmatter(p.read_text())
+            except OSError:
+                continue
+            out[name] = _preset_from_meta(name, meta, body)
+    return out
+
+
+def register_file_presets(dirs: list[Path] | None = None) -> dict[str, AgentPreset]:
+    """(Re)load file-authored agents into the process-level cache so `get_preset`
+    resolves them by name — including server-side, where presets arrive by name."""
+    global _FILE_PRESETS
+    try:
+        _FILE_PRESETS = load_file_presets(dirs)
+    except Exception:
+        _FILE_PRESETS = {}
+    return _FILE_PRESETS
+
+
+def all_preset_names() -> list[str]:
+    return sorted(set(PRESETS) | set(_FILE_PRESETS))
+
+
 def get_preset(name: str) -> AgentPreset:
-    return PRESETS.get((name or "build").lower(), PRESETS["build"])
+    key = (name or "build").lower()
+    if key in _FILE_PRESETS:  # a file-authored agent overrides / adds to built-ins
+        return _FILE_PRESETS[key]
+    return PRESETS.get(key, PRESETS["build"])

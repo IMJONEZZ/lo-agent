@@ -104,47 +104,53 @@ def set_palette(p: Palette) -> None:
 THEMES: dict[str, Palette] = {
     p.name: p
     for p in [
-        # Osaka Jade (default) — a soft, OpenCode-style dark jade-slate (no black),
-        # lower contrast: muted jade/gold/sakura on a lifted background.
+        # Osaka Jade (default) — matched to OpenCode's own osaka-jade.json: a
+        # near-black deep-jade base (#111c18), warm khaki body text (#c1c497), and
+        # a bright aqua-jade primary (#2dd5b7) as the signature. Warm text on a cool
+        # dark ground is the whole aesthetic; accents are disciplined (cyan primary,
+        # magenta reasoning, one warm gold, semantic red) — not a six-hue rainbow.
         Palette(
             "osaka-jade",
-            jade="#52cc9e",
-            jade_bright="#74e6bd",
-            jade_deep="#3a9d8c",
-            gold="#dcbb7a",
-            gold_deep="#c2a056",
-            sakura="#e8a6c2",
-            rose="#e6788c",
-            amber="#e3a366",
-            cream="#cfe0d6",
-            grey="#7e978c",
-            mute="#93a99c",
-            ink="#101915",
-            info="#64b4be",
-            bg="#1a2722",
-            surface="#21302a",
-            panel="#283a32",
+            jade="#2dd5b7",        # primary — signature bright aqua-jade
+            jade_bright="#8cd3cb",  # cyan-bright — emphasis
+            jade_deep="#509475",    # muted teal — quiet borders / scrollbar
+            gold="#e5c736",         # warm yellow — tools / the single warm accent
+            gold_deep="#b89a2e",    # dimmed gold — highlighted borders
+            sakura="#d2689c",       # magenta — reasoning / second accent
+            rose="#ff5345",         # red — errors
+            amber="#e0a94b",        # warm amber — working / resample
+            cream="#c1c497",        # warm khaki — body text / answers (the signature)
+            grey="#53685b",         # desaturated green-grey — chrome / separators
+            mute="#9aa88a",         # dim olive — "unsure" tokens
+            ink="#111c18",          # near-black — chip fg on an accent bg
+            info="#549e6a",         # green accent — assistant / info borders
+            bg="#111c18",           # deep jade-black base
+            surface="#1a2520",      # lifted panel
+            panel="#23372b",        # element / status background
             code_theme="nord",
         ),
-        # Osaka Midnight — a deeper jade than the default (still soft, no black), dimmer.
+        # Osaka Midnight — the real osaka-jade DNA taken deeper: the same aqua-jade
+        # primary, warm-khaki text, magenta reasoning and single warm gold, but on a
+        # darker ground with every accent dimmed a step. A true night variant of the
+        # theme above, not a different palette (ground stays above pure black).
         Palette(
             "osaka-midnight",
-            jade="#46c79b",
-            jade_bright="#63e0b8",
-            jade_deep="#2e8c7c",
-            gold="#cfb074",
-            gold_deep="#b08f44",
-            sakura="#dca4bc",
-            rose="#df6f86",
-            amber="#d99c66",
-            cream="#c3d4cb",
-            grey="#6a8278",
-            mute="#86998f",
-            ink="#0a120e",
-            info="#5aa6b0",
-            bg="#121b17",
-            surface="#18241f",
-            panel="#1e2c26",
+            jade="#29c3a7",         # primary — aqua-jade, a shade calmer than #2dd5b7
+            jade_bright="#7ec9c0",  # cyan-bright — emphasis
+            jade_deep="#457f68",    # muted teal — quiet borders / scrollbar
+            gold="#d4b833",         # warm yellow — tools, dimmed from #e5c736
+            gold_deep="#a88d2c",    # dimmed gold — highlighted borders
+            sakura="#c8629a",       # magenta — reasoning / second accent
+            rose="#ec4d40",         # red — errors
+            amber="#d19a45",        # warm amber — working / resample
+            cream="#b8bd93",        # warm khaki — body text, a touch dimmer than jade's
+            grey="#4c5f53",         # desaturated green-grey — chrome / separators
+            mute="#8a9a80",         # dim olive — "unsure" tokens
+            ink="#0d1814",          # near-black — chip fg on an accent bg
+            info="#4c8c60",         # green accent — assistant / info borders
+            bg="#0d1814",           # deeper jade-black than the default
+            surface="#142019",      # lifted panel
+            panel="#1d2e25",        # element / status background
             code_theme="nord",
         ),
         # Sakura — pink-forward on a soft dark plum (no black), accents eased.
@@ -168,25 +174,27 @@ THEMES: dict[str, Palette] = {
             panel="#342530",
             code_theme="material",
         ),
-        # Osaka Light — warm-paper background, dark jade text (needs dark=False).
+        # Osaka Light — osaka-jade.json's own light mode: warm-paper ground (#f6f5dd),
+        # near-black jade text (#111c18), the same aqua/magenta/green/gold accents
+        # darkened for contrast on paper. The faithful light half of the default theme.
         Palette(
             "osaka-light",
-            jade="#1f8a6b",
-            jade_bright="#26a37f",
-            jade_deep="#16705a",
-            gold="#b07d1a",
-            gold_deep="#8a5e10",
-            sakura="#c25c86",
-            rose="#c0344f",
-            amber="#b5632a",
-            cream="#2a2620",
-            grey="#7a8278",
-            mute="#5e655c",
-            ink="#f3efe7",
-            info="#2f7d8a",
-            bg="#f3efe7",
-            surface="#e9e3d6",
-            panel="#e0d8c8",
+            jade="#1faa90",         # primary — lightCyan
+            jade_bright="#0e9e84",  # deeper aqua for emphasis on paper
+            jade_deep="#3d7560",    # lightBlue — muted teal borders
+            gold="#b5a020",         # lightYellow — tools / warm accent
+            gold_deep="#8a5e10",    # dimmer gold — highlighted borders
+            sakura="#a8527a",       # lightMagenta — reasoning / second accent
+            rose="#c7392d",         # lightRed — errors
+            amber="#b5632a",        # warm amber — working / resample
+            cream="#111c18",        # lightFg0 — near-black body text on paper
+            grey="#53685b",         # lightGray — chrome / separators
+            mute="#5e655c",         # muted olive — "unsure" tokens
+            ink="#f6f5dd",          # lightBg0 — paper, chip fg on an accent bg
+            info="#3d7a52",         # lightGreen — assistant / info borders
+            bg="#f6f5dd",           # lightBg0 — warm paper
+            surface="#e8e7cc",      # lightBg1 — lifted panel
+            panel="#d5d4b8",        # lightBg2 — element / status background
             code_theme="friendly",
             dark=False,
         ),
@@ -869,11 +877,15 @@ def status_bar(
     learn: str,
     ctx: tuple[str, float | None] | None = None,
     vim: str | None = None,
+    shell: bool = False,
 ) -> Text:
     """The permanent status line above the input — the harness's edge, always on.
-    `ctx` is an optional (label, frac) context gauge; `vim` is the vim mode when on."""
+    `ctx` is an optional (label, frac) context gauge; `vim` is the vim mode when on;
+    `shell` lights a shell-mode chip when the prompt is in `!` shell mode."""
     out = Text()
     out.append(f" {preset} ", style=f"bold {INK} on {GOLD}")  # mode chip (gold)
+    if shell:  # `!` shell mode — the loudest chip, since it changes what Enter does
+        out.append(" ⚡ shell ", style=f"bold {INK} on {JADE}")
     if vim is not None:  # vim mode indicator (only when vim is enabled)
         out.append(
             f" {vim.upper()} ",
