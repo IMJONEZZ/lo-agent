@@ -26,6 +26,7 @@ htmlcov/
 
 # Local data (SQLite databases, memory stores)
 *.db
+lo.db
 harness.db
 memory.db
 

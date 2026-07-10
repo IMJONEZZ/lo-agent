@@ -21,7 +21,7 @@ from ..skills.skill import SkillNotFound
 
 # Persistent defaults, shared with the TUI (which also keeps theme/vim here).
 # Precedence everywhere: explicit flag > environment variable > config > builtin.
-_CONFIG_PATH = os.path.expanduser("~/.harness/config.json")
+_CONFIG_PATH = os.path.expanduser("~/.lo/config.json")
 _CONFIG_KEYS = ("url", "model", "db", "preset", "skills_dir", "theme", "vim")
 
 
@@ -48,9 +48,9 @@ def _version() -> str:
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--url", default=_opt("url", "HARNESS_BASE_URL", "http://localhost:8080"))
-    p.add_argument("--model", default=_opt("model", "HARNESS_MODEL", ""))
-    p.add_argument("--db", default=_opt("db", "HARNESS_DB", "harness.db"))
+    p.add_argument("--url", default=_opt("url", "LO_BASE_URL", "http://localhost:8080"))
+    p.add_argument("--model", default=_opt("model", "LO_MODEL", ""))
+    p.add_argument("--db", default=_opt("db", "LO_DB", "lo.db"))
 
 
 async def _client(args) -> OpenAICompatClient:
@@ -396,7 +396,7 @@ async def cmd_skill(args) -> None:
         if not names:
             print(f"no skills found in {registry.skill_dir}")
             print(
-                "add .toml skill files there, or point --skills-dir / HARNESS_SKILLS elsewhere"
+                "add .toml skill files there, or point --skills-dir / LO_SKILLS elsewhere"
             )
             return
         for name in names:
@@ -604,7 +604,7 @@ def cmd_runs(args) -> None:
 
 
 def cmd_config(args) -> None:
-    """Persistent defaults in ~/.harness/config.json — the same file the TUI
+    """Persistent defaults in ~/.lo/config.json — the same file the TUI
     keeps its theme/vim settings in, so both surfaces share one config."""
     cfg = _config()
     if args.action == "show":
@@ -705,7 +705,7 @@ async def cmd_doctor(args) -> None:
                f"{args.db} writable · {n} runs · sqlite {sqlite3.sqlite_version}")
     except Exception as e:
         report(False, "event log", f"{args.db}: {e}",
-               "check the path is writable (--db / HARNESS_DB / `lo config set db`)")
+               "check the path is writable (--db / LO_DB / `lo config set db`)")
 
     kvm = Path("/dev/kvm").exists()
     msb = bool(shutil.which("msb"))
@@ -993,9 +993,9 @@ def _build_session_app(
             from ..agent.memory import Memory
             from ..agent.notebook import Notebook, memory_tool, session_search_tool
 
-            mem_dir = _Path(getattr(args, "memory_dir", ".harness/memory"))
+            mem_dir = _Path(getattr(args, "memory_dir", ".lo/memory"))
             mem_dir.mkdir(parents=True, exist_ok=True)
-            notebook = Notebook(mem_dir, project_dir=str(_Path.cwd() / ".harness"))
+            notebook = Notebook(mem_dir, project_dir=str(_Path.cwd() / ".lo"))
             if "mem" not in _shared_mem:  # open the sqlite handle once, reuse per turn
                 _shared_mem["mem"] = Memory(mem_dir / "memory.db")
             tools.register(memory_tool(notebook))
@@ -1431,7 +1431,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("bench", help="measure lo-agent's advantages vs frontier APIs")
     _add_common(p)
-    p.add_argument("--skills-dir", default=_opt("skills_dir", "HARNESS_SKILLS"))
+    p.add_argument("--skills-dir", default=_opt("skills_dir", "LO_SKILLS"))
     p.add_argument("--n", type=int, default=8, help="samples per bench (default 8)")
     p.add_argument(
         "--no-batch-invariance",
@@ -1503,10 +1503,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("tui", help="interactive TUI: live run viewer + task launcher")
     _add_common(p)
     _add_agent_flags(p)
-    p.add_argument("--skills-dir", default=_opt("skills_dir", "HARNESS_SKILLS"))
+    p.add_argument("--skills-dir", default=_opt("skills_dir", "LO_SKILLS"))
     p.add_argument(
         "--tools",
-        default=os.environ.get("HARNESS_TOOLS", "tools.json"),
+        default=os.environ.get("LO_TOOLS", "tools.json"),
         help="JSON config of UTCP manuals / MCP servers to load",
     )
     p.add_argument(
@@ -1517,7 +1517,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--memory-dir",
-        default=os.environ.get("HARNESS_MEMORY_DIR", ".harness/memory"),
+        default=os.environ.get("LO_MEMORY_DIR", ".lo/memory"),
         help="dir for self-editing memory (MEMORY.md / USER.md)",
     )
     p.add_argument(
@@ -1527,7 +1527,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--preset",
-        default=_opt("preset", "HARNESS_PRESET", "build"),
+        default=_opt("preset", "LO_PRESET", "build"),
         help="agent preset: build | plan | explore | general",
     )
     p.add_argument(
@@ -1563,7 +1563,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8099)
     p.add_argument(
         "--preset",
-        default=_opt("preset", "HARNESS_PRESET", "build"),
+        default=_opt("preset", "LO_PRESET", "build"),
         help="default agent preset when a session request omits one "
         "(build | plan | explore | general)",
     )
@@ -1607,7 +1607,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="model-call index to fork at (default: the last/answer call)",
     )
     p.add_argument("--seed", type=int, default=None, help="override the seed")
-    p.add_argument("--skills-dir", default=_opt("skills_dir", "HARNESS_SKILLS"))
+    p.add_argument("--skills-dir", default=_opt("skills_dir", "LO_SKILLS"))
 
     p = sub.add_parser("runs", help="list runs in the event log")
     _add_common(p)
@@ -1619,7 +1619,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "config",
-        help="persistent defaults (url / model / db / preset) in ~/.harness/config.json",
+        help="persistent defaults (url / model / db / preset) in ~/.lo/config.json",
     )
     p.add_argument(
         "action", nargs="?", choices=["show", "get", "set", "unset"], default="show"
@@ -1640,7 +1640,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "diff", help="diff two runs' transcripts (e.g. a replay vs its original)"
     )
-    p.add_argument("--db", default=_opt("db", "HARNESS_DB", "harness.db"))
+    p.add_argument("--db", default=_opt("db", "LO_DB", "lo.db"))
     p.add_argument("run_a")
     p.add_argument("run_b")
 
@@ -1655,7 +1655,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "rewind", help="roll a run back to an earlier point (lossless; tail archived)"
     )
-    p.add_argument("--db", default=_opt("db", "HARNESS_DB", "harness.db"))
+    p.add_argument("--db", default=_opt("db", "LO_DB", "lo.db"))
     p.add_argument("run_id")
     p.add_argument(
         "--seq",
@@ -1665,15 +1665,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p = sub.add_parser("cost", help="$ saved vs a frontier API across logged runs")
-    p.add_argument("--db", default=_opt("db", "HARNESS_DB", "harness.db"))
+    p.add_argument("--db", default=_opt("db", "LO_DB", "lo.db"))
 
     p = sub.add_parser(
         "usage", help="token / cost / resample summary across logged runs"
     )
-    p.add_argument("--db", default=_opt("db", "HARNESS_DB", "harness.db"))
+    p.add_argument("--db", default=_opt("db", "LO_DB", "lo.db"))
 
     p = sub.add_parser("export", help="write a run's transcript to run-<id>.md")
-    p.add_argument("--db", default=_opt("db", "HARNESS_DB", "harness.db"))
+    p.add_argument("--db", default=_opt("db", "LO_DB", "lo.db"))
     p.add_argument("run_id", nargs="?", help="run to export (default: the most recent)")
     p.add_argument(
         "--stdout",
@@ -1687,14 +1687,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     p.add_argument("skill_name")
     p.add_argument("prompt", nargs="?", default="")
-    p.add_argument("--skills-dir", default=_opt("skills_dir", "HARNESS_SKILLS"))
+    p.add_argument("--skills-dir", default=_opt("skills_dir", "LO_SKILLS"))
     p.add_argument("--seed", type=int, default=1)
 
     p = sub.add_parser(
         "background", help="run background cognition once: consolidate, reflect, induce"
     )
     _add_common(p)
-    p.add_argument("--memory-db", default=os.environ.get("HARNESS_MEMORY", "memory.db"))
+    p.add_argument("--memory-db", default=os.environ.get("LO_MEMORY", "memory.db"))
     p.add_argument("--drafts-dir", default="skills/drafts")
     p.add_argument("--limit", type=int, default=10)
     p.add_argument(
@@ -1713,21 +1713,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("recall", help="query the FTS5 memory")
     p.add_argument("query")
-    p.add_argument("--memory-db", default=os.environ.get("HARNESS_MEMORY", "memory.db"))
+    p.add_argument("--memory-db", default=os.environ.get("LO_MEMORY", "memory.db"))
 
     p = sub.add_parser(
         "proxy", help="guardrails + logit-pipeline proxy (OpenAI + Anthropic APIs)"
     )
     p.add_argument(
         "--url",
-        default=_opt("url", "HARNESS_BASE_URL", "http://localhost:8080"),
+        default=_opt("url", "LO_BASE_URL", "http://localhost:8080"),
         help="upstream model server",
     )
-    p.add_argument("--model", default=_opt("model", "HARNESS_MODEL", ""))
+    p.add_argument("--model", default=_opt("model", "LO_MODEL", ""))
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8088)
     p.add_argument("--db", default="proxy.db")
-    p.add_argument("--skills-dir", default=_opt("skills_dir", "HARNESS_SKILLS"))
+    p.add_argument("--skills-dir", default=_opt("skills_dir", "LO_SKILLS"))
     p.add_argument("--skill", help="default grammar skill applied to every request")
     p.add_argument(
         "--samplers", help='JSON sampler settings, e.g. \'{"min_p": 0.05, "dry": {}}\''
@@ -1751,10 +1751,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--url",
-        default=_opt("url", "HARNESS_BASE_URL", "http://localhost:8080"),
+        default=_opt("url", "LO_BASE_URL", "http://localhost:8080"),
         help="model endpoint the TUI's embedded server talks to",
     )
-    p.add_argument("--model", default=_opt("model", "HARNESS_MODEL", ""))
+    p.add_argument("--model", default=_opt("model", "LO_MODEL", ""))
     p.add_argument("--record", help="write an asciicast v2 of the run to this path")
     p.add_argument(
         "--scale",
@@ -1815,14 +1815,14 @@ def main() -> None:
         if hint:
             msg += f" — did you mean {hint[0]!r}?"
         msg += "\n  available: " + (", ".join(e.available) or "(none)")
-        msg += "\n  ('lo skill list' to enumerate; --skills-dir / HARNESS_SKILLS to change where skills load from)"
+        msg += "\n  ('lo skill list' to enumerate; --skills-dir / LO_SKILLS to change where skills load from)"
         print(msg, file=sys.stderr)
         raise SystemExit(2)
     except httpx.ConnectError:
         url = getattr(args, "url", "the server")
         raise SystemExit(
             f"✗ can't reach {url} — is the server running? "
-            "Check --url / HARNESS_BASE_URL."
+            "Check --url / LO_BASE_URL."
         )
     except httpx.HTTPError as e:
         raise SystemExit(f"✗ server error: {type(e).__name__}: {e}")

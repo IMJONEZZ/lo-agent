@@ -113,7 +113,7 @@ def _theme_from_palette(p: render.Palette) -> Theme:
 
 
 # Where the chosen theme is remembered across sessions.
-_CONFIG_PATH = os.path.expanduser("~/.harness/config.json")
+_CONFIG_PATH = os.path.expanduser("~/.lo/config.json")
 
 _PRESET_BLURB = {
     "build": "full toolset; writes/shell/web ask, reads free",
@@ -624,7 +624,7 @@ class HarnessApp(App):
         skills_dir: str | None = None,
         tools_config: dict | None = None,
         resample_threshold: float | None = None,
-        memory_dir: str = ".harness/memory",
+        memory_dir: str = ".lo/memory",
         allow_all: bool = False,
         preset: str = "build",
         background: bool = False,
@@ -906,9 +906,9 @@ class HarnessApp(App):
             from pathlib import Path
 
             Path(self.memory_dir).mkdir(parents=True, exist_ok=True)
-            # PROJECT.md lives in the cwd's .harness/, so it travels with the codebase.
+            # PROJECT.md lives in the cwd's .lo/, so it travels with the codebase.
             self.notebook = Notebook(
-                self.memory_dir, project_dir=str(Path.cwd() / ".harness")
+                self.memory_dir, project_dir=str(Path.cwd() / ".lo")
             )
             self._memory = Memory(Path(self.memory_dir) / "memory.db")
             self._tool_registry.register(memory_tool(self.notebook))
@@ -2944,7 +2944,7 @@ class HarnessApp(App):
 
     def action_theme(self, name: str | None = None) -> None:
         """Switch theme. `/theme <name>` applies directly; `/theme` opens a picker
-        with live preview. The choice persists in ~/.harness/config.json."""
+        with live preview. The choice persists in ~/.lo/config.json."""
         if name and name in render.THEMES:
             self._apply_theme(name)
             self._save_config_value("theme", name)

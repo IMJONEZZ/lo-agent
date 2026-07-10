@@ -227,8 +227,8 @@ async def _wikipedia_search(query: str, transport, limit: int = 6) -> str:
         resp.raise_for_status()
         pages = resp.json().get("pages", [])
     if not pages:
-        return f"no Wikipedia results for {query!r}. For broader web search, set HARNESS_SEARCH_URL."
-    lines = [f"web_search results for {query!r} (source: Wikipedia; set HARNESS_SEARCH_URL "
+        return f"no Wikipedia results for {query!r}. For broader web search, set LO_SEARCH_URL."
+    lines = [f"web_search results for {query!r} (source: Wikipedia; set LO_SEARCH_URL "
              "for a general web provider):"]
     for p in pages:
         url = f"https://en.wikipedia.org/wiki/{p.get('key', '')}"
@@ -239,9 +239,9 @@ async def _wikipedia_search(query: str, transport, limit: int = 6) -> str:
 
 async def web_search(query: str, transport: httpx.AsyncBaseTransport | None = None) -> str:
     """Search the web. Defaults to a keyless Wikipedia search; point at any other
-    provider by setting $HARNESS_SEARCH_URL (it receives ?q=<query>). Follow up by
+    provider by setting $LO_SEARCH_URL (it receives ?q=<query>). Follow up by
     calling webfetch on a result URL to read the full page."""
-    url = os.environ.get("HARNESS_SEARCH_URL")
+    url = os.environ.get("LO_SEARCH_URL")
     if not url:
         return await _wikipedia_search(query, transport)
     async with httpx.AsyncClient(timeout=30, follow_redirects=True, transport=transport) as c:

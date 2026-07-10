@@ -126,8 +126,8 @@ uninstall() {
   fi
   tier_lock
   printf '\n%syour data was left alone:%s\n' "$BOLD" "$R"
-  printf '  %s~/.harness/%s            config + memory — remove with: rm -rf ~/.harness\n' "$GOLD" "$R"
-  printf '  %sharness.db%s             per-project event logs, next to wherever you ran lo\n' "$GOLD" "$R"
+  printf '  %s~/.lo/%s            config + memory — remove with: rm -rf ~/.lo\n' "$GOLD" "$R"
+  printf '  %slo.db%s             per-project event logs, next to wherever you ran lo\n' "$GOLD" "$R"
   printf '\n%sthe models were local all along. so long. 🦙%s\n\n' "$DIM" "$R"
   rm -f "$LOG"
   exit 0

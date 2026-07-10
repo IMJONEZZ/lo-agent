@@ -30,7 +30,7 @@ def test_version_flag(capsys):
 
 
 def test_title_column_migrates_old_databases(tmp_path):
-    """A pre-title harness.db gains the column on open — no data lost."""
+    """A pre-title lo.db gains the column on open — no data lost."""
     db = str(tmp_path / "old.db")
     conn = sqlite3.connect(db)
     conn.executescript(
@@ -132,7 +132,7 @@ def test_ago_units():
 def cfg_path(tmp_path, monkeypatch):
     path = str(tmp_path / "config.json")
     monkeypatch.setattr(cli, "_CONFIG_PATH", path)
-    for var in ("HARNESS_BASE_URL", "HARNESS_MODEL", "HARNESS_DB"):
+    for var in ("LO_BASE_URL", "LO_MODEL", "LO_DB"):
         monkeypatch.delenv(var, raising=False)
     return path
 
@@ -146,7 +146,7 @@ def test_config_set_feeds_parser_defaults(cfg_path, monkeypatch, capsys):
     args = cli.build_parser().parse_args(["probe"])
     assert args.url == "http://box:8080"
     # env beats config
-    monkeypatch.setenv("HARNESS_BASE_URL", "http://env:1")
+    monkeypatch.setenv("LO_BASE_URL", "http://env:1")
     args = cli.build_parser().parse_args(["probe"])
     assert args.url == "http://env:1"
     # an explicit flag beats both

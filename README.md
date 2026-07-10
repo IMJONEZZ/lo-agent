@@ -114,7 +114,7 @@ The pillars, roughly in dependency order:
 ## TUI
 
 ```bash
-lo tui                  # watch + launch agent runs (harness.db)
+lo tui                  # watch + launch agent runs (lo.db)
 lo tui --db proxy.db    # watch live proxy traffic
 ```
 
@@ -200,9 +200,9 @@ lo recall "sql users"
 Tip: start llama.cpp with `--slot-save-path /some/dir` to unlock true KV-state
 snapshots (tree forks restore exactly instead of relying on prefix cache).
 
-`--url/--model/--db` or `HARNESS_BASE_URL`/`HARNESS_MODEL`/`HARNESS_DB` select the
-endpoint and event-log database (default `harness.db`). Set them once instead with
-`lo config set url http://…` (`~/.harness/config.json`, shared with the TUI);
+`--url/--model/--db` or `LO_BASE_URL`/`LO_MODEL`/`LO_DB` select the
+endpoint and event-log database (default `lo.db`). Set them once instead with
+`lo config set url http://…` (`~/.lo/config.json`, shared with the TUI);
 precedence is flag > env > config.
 
 More setup helpers:
@@ -264,6 +264,6 @@ uv tool uninstall lo-agent                              # one-liner / uv install
 brew uninstall lo-agent && brew untap IMJONEZZ/lo-agent # brew installs
 ```
 
-Your data is never touched by an uninstall: `~/.harness/` holds config and
-memory (`rm -rf ~/.harness` if you want it gone), and each project keeps its
-event log in a local `harness.db`.
+Your data is never touched by an uninstall: `~/.lo/` holds config and
+memory (`rm -rf ~/.lo` if you want it gone), and each project keeps its
+event log in a local `lo.db`.

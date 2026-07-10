@@ -66,7 +66,7 @@ def start_server(
 
     from local_harness.cli.main import _build_session_app, _free_port
 
-    db = str(tmp_path / "harness.db")
+    db = str(tmp_path / "lo.db")
     args = SimpleNamespace(
         url=UPSTREAM_URL,
         model=UPSTREAM_MODEL,

@@ -24,7 +24,7 @@ async def play_pty(name: str, tmp_path):
     url, upstream = start_mock_upstream(mock)
     driver = PtyTui(
         tui_command(url, str(tmp_path / "h.db")),
-        env={"HOME": str(tmp_path)},  # isolate ~/.harness config + memory
+        env={"HOME": str(tmp_path)},  # isolate ~/.lo config + memory
         cwd=str(tmp_path),
     )
     try:

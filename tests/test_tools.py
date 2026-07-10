@@ -71,7 +71,7 @@ async def test_webfetch_strips_html_to_text():
 
 
 async def test_web_search_defaults_to_keyless_wikipedia(monkeypatch):
-    monkeypatch.delenv("HARNESS_SEARCH_URL", raising=False)
+    monkeypatch.delenv("LO_SEARCH_URL", raising=False)
 
     def handler(request):
         assert "wikipedia.org" in request.url.host
@@ -91,7 +91,7 @@ async def test_web_search_uses_configured_provider(monkeypatch):
     def handler(request):
         seen["q"] = dict(request.url.params).get("q")
         return httpx.Response(200, text="result one; result two")
-    monkeypatch.setenv("HARNESS_SEARCH_URL", "http://search.test/api")
+    monkeypatch.setenv("LO_SEARCH_URL", "http://search.test/api")
     out = await web_search("rivers", transport=httpx.MockTransport(handler))
     assert seen["q"] == "rivers" and "result one" in out
 

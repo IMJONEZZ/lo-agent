@@ -74,8 +74,8 @@ class AgentPreset:
 
 # No token budget by default: locally, output tokens are free, and a cap only ever
 # truncates real output (a file body cut mid-JSON, a reasoning trace cut mid-thought).
-# Let the server decide. A user who wants a cap sets HARNESS_MAX_TOKENS.
-_CAP = os.environ.get("HARNESS_MAX_TOKENS")
+# Let the server decide. A user who wants a cap sets LO_MAX_TOKENS.
+_CAP = os.environ.get("LO_MAX_TOKENS")
 _MAX = int(_CAP) if _CAP else None
 
 PRESETS: dict[str, AgentPreset] = {

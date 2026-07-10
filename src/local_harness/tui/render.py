@@ -703,7 +703,7 @@ def chat_assistant(p: dict, show_thinking: bool = True) -> RenderableType:
             Text.assemble(
                 ("  ⚠ ", C_RESAMPLE),
                 (
-                    "output truncated (token cap hit) — unset HARNESS_MAX_TOKENS",
+                    "output truncated (token cap hit) — unset LO_MAX_TOKENS",
                     "italic " + C_RESAMPLE,
                 ),
             )
