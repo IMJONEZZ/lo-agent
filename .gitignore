@@ -27,7 +27,8 @@ htmlcov/
 # Local data (SQLite databases, memory stores)
 *.db
 lo.db
-harness.db
+lo.db-shm
+lo.db-wal
 memory.db
 
 # Demo artifacts (cast recordings, videos, scripts)
@@ -42,8 +43,8 @@ thoughts/
 profiles/
 local_llm_advantages_plan.md
 
-# Local harness memory/state
-.harness/
+# Local lo memory/state
+.lo/
 
 # Misc
 results.txt
