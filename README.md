@@ -1,9 +1,13 @@
-# local_harness
+# lo-agent
 
-An agent harness built around the advantages local and self-hosted LLMs have over
-frontier APIs: determinism & exact replay, spec-driven grammar skills, a token-level
-logit pipeline, uncertainty-aware control flow, KV-cache-aware tree search, and
-free-tokens compute scaling.
+`lo` is an agent harness built around the advantages local and self-hosted LLMs
+have over frontier APIs: determinism & exact replay, spec-driven grammar skills,
+a token-level logit pipeline, uncertainty-aware control flow, KV-cache-aware
+tree search, and free-tokens compute scaling.
+
+You need Python ≥ 3.12 and any OpenAI-compatible model server — llama.cpp,
+vLLM, LM Studio, or Ollama, on this machine or another box. No local GPU
+required; the model runs wherever your server does.
 
 ## Installation
 
@@ -41,20 +45,30 @@ checkout): `uv tool install -e .`
 ## Quickstart
 
 ```bash
-# Probe your server's capabilities
-lo probe --url http://localhost:8080
+# 0. Have a model server running. Any OpenAI-compatible endpoint works, e.g.:
+llama-server -m your-model.gguf --port 8080     # or vLLM / LM Studio / Ollama
 
-# Run an agent task
+# 1. Find it and drop straight into the TUI
+lo quickstart                                   # scans :8080 :8000 :1234 :11434
+lo quickstart --url http://<host>:<port>        # server on another machine
+
+# 2. Make the endpoint stick so you never type --url again
+lo config set url http://localhost:8080         # flag > env > config precedence
+
+# 3. Or drive it from the CLI
 lo run "Use the calculator tool to compute 17*23 plus 100."
 
-# Start the TUI
-lo tui
-
-# Start the proxy (OpenAI + Anthropic compatible)
-lo proxy --url http://localhost:8080 --port 8088
+# Something not working? Diagnose it — each failure comes with a fix:
+lo doctor
 ```
 
-See the [Usage](#usage) section below for the full command reference.
+`lo probe` reports what your server unlocked (see [capability tiers](#architecture-capability-tiers)),
+`lo proxy` puts the logit pipeline in front of any client, and the
+[Usage](#usage) section has the full command reference.
+
+## What's inside
+
+The pillars, roughly in dependency order:
 
 1. Substrate — client, capability prober, event log, bit-identical replay, crash resume
 2. Spec-driven skills (grammar IR → GBNF/Lark/JSON-schema/validate-retry), logit
@@ -104,6 +118,15 @@ highlighted one (titles show up in `lo runs` too). `/inspect` opens per-model-ca
 stats — timing, tokens, logprob confidence, finish reason — straight from the
 event log. `/help` lists everything.
 
+The TUI is a thin client of a session server (started embedded by default).
+You can also run that server on its own and attach from anywhere:
+
+```bash
+lo serve --port 8099        # headless session server (HTTP + SSE bus)
+lo tail --task "check CI"   # start + follow a session from another terminal
+lo daemon start             # keep `lo serve` running in a detached tmux
+```
+
 ## Proxy
 
 ```bash
@@ -141,8 +164,6 @@ One OpenAI-compatible client + a capability prober + thin per-server adapters
 ## Usage
 
 ```bash
-uv sync
-
 # What can this server do? (probes seed determinism with live test requests)
 lo probe --url http://localhost:8080
 
@@ -200,7 +221,8 @@ src/local_harness/
 ├── native/      # Tier-4 in-process backend, activation steering, LoRA hot-swap
 ├── proxy/       # OpenAI + Anthropic API front door with pipeline + guardrails
 ├── tui/         # Textual app: live run viewer + task launcher over the event log
-└── cli/         # lo probe|run|resume|replay|runs|skill|background|recall|proxy|tui
+├── sim/         # user-simulation journeys: scenario DSL + PTY driver (lo simulate)
+└── cli/         # lo quickstart|run|tui|serve|proxy|runs|replay|diff|config|doctor|…
 ```
 
 ## Tests
@@ -209,6 +231,11 @@ src/local_harness/
 uv run pytest
 ```
 
-Unit tests run against mock servers (no GPU needed). Live verification against a
-running llama.cpp server: `lo probe`, then `run` + `replay` — replay exits 0
-only if the transcript hash matches.
+Unit tests run against mock servers (no GPU needed), including user-simulation
+journeys that drive the real TUI over the real session server. Two opt-in tiers
+go further: `-m pty` (a real PTY subprocess) and `-m live` (a real model —
+`LO_LIVE_URL=http://<host>:8080 uv run pytest -m live`), or point any journey at
+a live box with `lo simulate <name|all> --url http://<host>:8080`.
+
+Live verification against a running llama.cpp server: `lo probe`, then `run` +
+`replay` — replay exits 0 only if the transcript hash matches.
