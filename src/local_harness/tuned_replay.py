@@ -43,6 +43,12 @@ class Intervention:
     skill: Skill | None = None         # guidance/grammar: constrain the answer
     extra_body: dict | None = None     # raw body params (samplers, bias, …)
     seed: int | None = None            # override the seed (default: keep the logged one)
+    # Rung 6: an activation-level counterfactual — re-generate the fork step's
+    # prompt through a lens service with these J-space edits (steer/ablate/swap
+    # specs, service form). Held-fixed seed → deterministic. Mutually exclusive
+    # with system_prompt/skill (a different generation path entirely).
+    jlens: list[dict] | None = None
+    lens_url: str | None = None
 
 
 @dataclass
@@ -81,6 +87,39 @@ def _answer_text(message: dict) -> str:
     return (message.get("content") or "").strip()
 
 
+def _messages_to_prompt(body: dict) -> str:
+    """Flatten a chat request's messages into a plain prompt for the lens
+    service (which tokenizes text). Uses role tags the sidecar's template can
+    handle; a fully faithful path would call /apply_template, but the fork
+    step's answer is what we counterfactual, so a concatenation suffices."""
+    parts = []
+    for m in body.get("messages", []):
+        parts.append(f"{m.get('role','user')}: {m.get('content','')}")
+    parts.append("assistant:")
+    return "\n".join(parts)
+
+
+async def _replay_jlens(intervention, run_id, fork_index, original, payload):
+    """Activation-level counterfactual via the lens service (greedy, deterministic)."""
+    import httpx
+
+    if not intervention.lens_url:
+        raise ValueError("jlens intervention needs lens_url")
+    prompt = _messages_to_prompt(payload["request_body"])
+    async with httpx.AsyncClient(timeout=600) as c:
+        r = await c.post(intervention.lens_url.rstrip("/") + "/lens/generate", json={
+            "prompt": prompt, "n_predict": 64,
+            "interventions": intervention.jlens, "compare": True,
+            "sampling": {"greedy": True}})
+        r.raise_for_status()
+        out = r.json()
+    tuned = out["steered"]["text"]
+    baseline = out.get("baseline", {}).get("text", original)
+    return TunedReplayReport(
+        run_id=run_id, fork_index=fork_index, intervention=intervention.label,
+        original=baseline, tuned=tuned, changed=(tuned != baseline))
+
+
 async def replay_tuned(
     log: EventLog,
     run_id: str,
@@ -99,6 +138,12 @@ async def replay_tuned(
         fork_index = len(calls) - 1
     payload = calls[fork_index].payload
     original = canonical_text(payload["response"]["choices"][0]["message"])
+
+    # Rung-6 path: re-generate the fork step's prompt through the lens service
+    # with J-space edits active. Evidence (the prompt) is held fixed; the only
+    # changed variable is the residual-stream intervention. Deterministic (greedy).
+    if intervention.jlens is not None:
+        return await _replay_jlens(intervention, run_id, fork_index, original, payload)
 
     body = copy.deepcopy(payload["request_body"])
     # We re-generate the synthesis, not the tool decision: drop tools so the model
