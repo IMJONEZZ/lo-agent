@@ -50,6 +50,14 @@ class Capabilities:
     responses_api: bool = False  # /v1/responses with logprobs (e.g. LM Studio)
     logprobs_via_responses: bool = False  # logprobs come from /v1/responses, not chat
     in_process: bool = False  # Tier 4, native backend only (Phase 5)
+    # Rung 6: activation access via a paired jlens lens service. `activations`
+    # = read the residual stream (lens tab); `interventions` = steer/ablate/
+    # swap. Either grants Tier 4 (like in_process) but over HTTP to a GGUF, not
+    # a torch model on this box. lens_url/lens_method describe the pairing.
+    activations: bool = False
+    interventions: bool = False
+    lens_url: str | None = None
+    lens_method: str | None = None  # 'regression' | 'identity' | 'jacobian'
     lora_mode: str | None = None  # hot-swappable LoRA adapters: 'vllm'|'llamacpp'|None
     lora_adapters: list = field(default_factory=list)  # preloaded adapters (llama.cpp)
     # Loaded context-window size in tokens, read from the server (llama.cpp /props
@@ -62,7 +70,9 @@ class Capabilities:
     batch_invariant: bool | None = None
 
     def tier(self) -> int:
-        if self.in_process:
+        # Rung 6 activation access (in-process torch OR a paired lens service)
+        # is Tier 4 — it's above the HTTP token-distribution rungs.
+        if self.in_process or (self.activations and self.interventions):
             return 4
         tier = 0
         if self.seed and self.logprobs:
@@ -107,6 +117,12 @@ class Capabilities:
             ),
             f"batch-invariant: {'unprobed' if self.batch_invariant is None else self.batch_invariant}",
         ]
+        if self.activations or self.interventions:
+            mech = "in-process" if self.in_process else f"lens ({self.lens_method or 'identity'})"
+            lines.append(
+                f"activations:     read={self.activations} write={self.interventions}"
+                f" · {mech}" + (f" @ {self.lens_url}" if self.lens_url else "")
+            )
         return "\n".join(lines)
 
 
@@ -253,7 +269,37 @@ async def probe(client: OpenAICompatClient) -> Capabilities:
 
     await probe_lora(client, caps)
 
+    # Rung 6: a paired lens service (activations over HTTP). Cheap health check
+    # only — NEVER spawns a sidecar or runs a capture pass. Opt-in via a
+    # configured lens_url (LO_LENS_URL / config), so connect-time stays light.
+    lens_url = getattr(client, "lens_url", None)
+    if lens_url:
+        await probe_lens(caps, lens_url)
+
     return caps
+
+
+async def probe_lens(caps: Capabilities, lens_url: str) -> None:
+    """Set activation/intervention flags from a lens service's /health.
+
+    Does not build or start anything — if the service is up, its /health
+    reports the lens method and readable-layer count. Absent/unreachable → the
+    flags stay False and the tier is unaffected.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.get(lens_url.rstrip("/") + "/health")
+        if r.status_code != 200:
+            return
+        data = r.json()
+        if data.get("status") != "ok":
+            return
+        caps.activations = True
+        caps.interventions = True  # any lens service can translate steer/ablate/swap
+        caps.lens_url = lens_url
+        caps.lens_method = (data.get("lens") or {}).get("method")
+    except (httpx.HTTPError, json.JSONDecodeError):
+        pass
 
 
 def _responses_has_logprobs(data: dict) -> bool:

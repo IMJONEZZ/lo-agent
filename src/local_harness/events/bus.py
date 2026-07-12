@@ -34,6 +34,7 @@ REASONING_DELTA = "reasoning_delta"  # payload: {text}
 TOOL_PROGRESS = "tool_progress"  # payload: {name, phase}  (start|done)
 NOTICE = "notice"  # payload: {message} — a one-off human-readable hint
 PERMISSION_REQUEST = "permission_request"  # payload: {request_id, tool, arguments} — ask the client to approve a tool
+ACTIVATION_DELTA = "activation_delta"  # payload: {pos, concepts:[{piece,rank}], alerts:[...]} — J-space live strip (Rung 6)
 
 # The terminal event types a one-shot follow should stop on.
 TERMINAL = {RUN_COMPLETED, RUN_FAILED}

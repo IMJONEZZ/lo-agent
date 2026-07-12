@@ -22,7 +22,7 @@ from ..skills.skill import SkillNotFound
 # Persistent defaults, shared with the TUI (which also keeps theme/vim here).
 # Precedence everywhere: explicit flag > environment variable > config > builtin.
 _CONFIG_PATH = os.path.expanduser("~/.lo/config.json")
-_CONFIG_KEYS = ("url", "model", "db", "preset", "skills_dir", "theme", "vim")
+_CONFIG_KEYS = ("url", "model", "db", "preset", "skills_dir", "theme", "vim", "lens_url")
 
 
 def _config() -> dict:
@@ -55,6 +55,8 @@ def _add_common(p: argparse.ArgumentParser) -> None:
 
 async def _client(args) -> OpenAICompatClient:
     client = OpenAICompatClient(args.url, args.model)
+    # Rung 6: a configured lens service makes probe() report activations/Tier 4.
+    client.lens_url = _opt("lens_url", "LO_LENS_URL", "") or None
     if not client.model:
         models = await client.list_models()
         if not models:
@@ -101,6 +103,12 @@ async def cmd_lora(args) -> None:
                 "  load a new one at runtime via POST /v1/load_lora_adapter "
                 "(needs VLLM_ALLOW_RUNTIME_LORA_UPDATING)"
             )
+
+
+def cmd_lens(args) -> None:
+    """Jacobian lens (Rung 6: activations over HTTP). Dispatches to jlens.cli."""
+    from ..jlens.cli import run
+    run(args)
 
 
 def cmd_sandbox(args) -> None:
@@ -1446,6 +1454,71 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("lora", help="list hot-swappable LoRA adapters on the server")
     _add_common(p)
 
+    # --- lens (Rung 6: activations) ---
+    p = sub.add_parser("lens", help="Jacobian lens: read/steer the residual stream (Tier 4 over HTTP)")
+    lsub = p.add_subparsers(dest="lens_action", required=True)
+    up = lsub.add_parser("up", help="build+start the sidecar and lens service ON THIS box")
+    up.add_argument("--model", default=None, help="model GGUF path")
+    up.add_argument("--llama-server", default=None, help="read the GGUF from a running server's /props")
+    up.add_argument("--model-name", default=None, help="model name to scan for (LM Studio/Ollama stores)")
+    up.add_argument("--lens", default=None, help="lens GGUF (default: auto-discover, else identity/logit lens)")
+    up.add_argument("--host", default="127.0.0.1")
+    up.add_argument("--service-port", type=int, default=8092)
+    up.add_argument("--sidecar-port", type=int, default=8091)
+    up.add_argument("--sidecar-bin", default=None, help="path to jlens-server (else built on demand)")
+    up.add_argument("--llama-dir", default=None, help="llama.cpp checkout to build against")
+    up.add_argument("--ctx-size", type=int, default=4096)
+    up.add_argument("--chunk", type=int, default=256)
+    up.add_argument("--n-gpu-layers", type=int, default=0)
+    up.add_argument("--threads", type=int, default=0)
+    up.add_argument("--jobs", type=int, default=None)
+    up.add_argument("--no-build", action="store_true", help="fail if no binary instead of building")
+    doc = lsub.add_parser("doctor", help="explain setup + check a configured lens_url")
+    doc.add_argument("--lens-url", default=_opt("lens_url", "LO_LENS_URL", "") or None)
+    st = lsub.add_parser("status", help="print the lens service's props")
+    st.add_argument("--lens-url", default=_opt("lens_url", "LO_LENS_URL", "") or None)
+    fit = lsub.add_parser("fit", help="fit a regression lens via the sidecar (ON THIS box)")
+    fit.add_argument("--model", default=None, help="model GGUF (for MTP-aware target layer)")
+    fit.add_argument("--corpus", default="wikitext:100", help="'wikitext[:N]' or a local text file")
+    fit.add_argument("--n-prompts", type=int, default=100)
+    fit.add_argument("--layers", default=None, help="comma-separated source layers (default: all below target)")
+    fit.add_argument("--target-layer", type=int, default=None, help="default: MTP-aware final readable layer")
+    fit.add_argument("--max-seq-len", type=int, default=128)
+    fit.add_argument("--ridge", type=float, default=1e-4)
+    fit.add_argument("--gram-dtype", choices=["float64", "float32"], default="float64")
+    fit.add_argument("--sidecar-port", type=int, default=8091)
+    fit.add_argument("--hf", default=None,
+                     help="fit the EXACT causal lens on this HF/safetensors checkpoint "
+                          "(torch; the vLLM path) instead of the GGUF regression surrogate")
+    fit.add_argument("--device", default="cpu", help="torch device for --hf")
+    fit.add_argument("-o", "--output", required=True)
+    ins = lsub.add_parser("inspect", help="print a lens GGUF's metadata")
+    ins.add_argument("path")
+    gen = lsub.add_parser("gen", help="one-shot A/B: steer/ablate/swap a concept vs baseline")
+    gen.add_argument("prompt")
+    gen.add_argument("--lens-url", default=_opt("lens_url", "LO_LENS_URL", "") or None)
+    gen.add_argument("--steer", help="token to summon (e.g. ' yen')")
+    gen.add_argument("--ablate", help="token to remove (e.g. ' Euro')")
+    gen.add_argument("--swap", help="two tokens 'A/B' to exchange")
+    gen.add_argument("--alpha", type=float, default=2.0)
+    gen.add_argument("--layers", default=None, help="comma or lo,hi layer band")
+    gen.add_argument("--n-predict", type=int, default=24)
+    exp = lsub.add_parser("export", help="export a J-space edit for your EXISTING server")
+    exp.add_argument("kind", choices=["cvec", "abliterate"])
+    exp.add_argument("--model", required=True, help="model GGUF (for readout weights)")
+    exp.add_argument("--lens", default=None, help="lens GGUF (default identity/logit lens)")
+    exp.add_argument("--steer", help="cvec: token to steer toward (e.g. ' yen' or #id)")
+    exp.add_argument("--token", help="abliterate: comma-separated tokens to remove")
+    exp.add_argument("--alpha", type=float, default=4.0)
+    exp.add_argument("--layers", default=None, help="lo,hi layer band")
+    exp.add_argument("--sidecar-port", type=int, default=8091)
+    exp.add_argument("-o", "--output", required=True)
+    sh = lsub.add_parser("shim", help="build the LD_PRELOAD shim to live-steer your OWN llama-server")
+    sh.add_argument("--llama-dir", required=True, help="the llama.cpp checkout your server is built from")
+    sh.add_argument("--llama-build", default=None, help="build/bin dir (default <llama-dir>/build/bin)")
+    sh.add_argument("--server-bin", default=None, help="your llama-server binary (linkage check)")
+    sh.add_argument("-o", "--output", default=None, help="output .so path")
+
     def _add_agent_flags(p):
         p.add_argument("--max-steps", type=int, default=20)
         p.add_argument(
@@ -1774,6 +1847,7 @@ _HANDLERS = {
     "bench": cmd_bench,
     "sandbox": cmd_sandbox,
     "lora": cmd_lora,
+    "lens": cmd_lens,
     "run": cmd_run,
     "resume": cmd_resume,
     "replay": cmd_replay,

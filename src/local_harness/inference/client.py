@@ -31,6 +31,9 @@ class OpenAICompatClient:
         # Studio) and not on chat-completions, the prober sets this so logprob
         # requests transparently route there. See capabilities.probe().
         self.logprobs_via_responses = False
+        # Rung 6: a paired lens service URL (set from config/env by callers); when
+        # present, probe() reports activation/intervention capability (Tier 4).
+        self.lens_url: str | None = None
         headers = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"

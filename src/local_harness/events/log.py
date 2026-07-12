@@ -28,6 +28,7 @@ USER_MESSAGE = "user_message"    # payload: {content} — a follow-up turn conti
 CONTEXT_COMPACTED = "context_compacted"  # payload: {method, before_tokens, after_tokens, trigger_tokens, summary?}
 MESSAGE_SNIPPED = "message_snipped"  # payload: {seq} — collapse that event's content in future context (lossless)
 AGENT_SPAWNED = "agent_spawned"      # payload: {child_run_id, task} — a worker the lead fanned out (Coordinator)
+JLENS_INTERVENTION = "jlens_intervention"  # payload: {specs, lens_hash, target} — a J-space edit set (Rung 6; replayable)
 
 
 @dataclass
