@@ -860,6 +860,10 @@ def ability_glyphs(caps) -> list[str]:
         g.append(f"zoo({len(caps.sampler_zoo)})")
     if caps.kv_snapshot or caps.parallel_n:
         g.append("fork")
+    if getattr(caps, "interventions", False):
+        g.append("⊹steer")          # Rung 6: read + write the residual stream
+    elif getattr(caps, "activations", False):
+        g.append("⊹lens")           # Rung 6: read-only (inspect)
     return g
 
 

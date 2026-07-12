@@ -599,6 +599,7 @@ class HarnessApp(App):
         Binding("ctrl+u", "usage", "Usage"),
         Binding("ctrl+r", "replay", "Replay"),
         Binding("ctrl+g", "plan_fork", "Plan-fork"),
+        Binding("ctrl+j", "jacobian", "J-Lens"),
         Binding("ctrl+o", "connect", "Connect"),
         Binding("ctrl+y", "toggle_thinking", "Thinking", show=False),
         Binding("pageup", "scroll_chat_up", "Scroll ↑", show=False),
@@ -2237,7 +2238,7 @@ class HarnessApp(App):
     _BUILTIN_SLASH = frozenset({
         "new", "clear", "help", "?", "agent", "mode", "sessions", "rewind", "undo",
         "stop", "interrupt", "snip", "delete", "usage", "context", "ctx", "inspect",
-        "memory",
+        "lens", "memory",
         "mem", "review", "security-review", "sec-review", "secreview", "agents",
         "tasks", "mcp", "vim", "codemode", "code-mode", "theme", "cost", "export",
         "model", "fast", "effort", "replay", "plan", "fork", "plan-fork", "connect",
@@ -2301,6 +2302,7 @@ class HarnessApp(App):
         "agent": "switch preset (build/plan/explore/general)",
         "think": "toggle thinking",
         "usage": "cost / determinism / confidence",
+        "lens": "J-Lens: read/steer the residual stream (Rung 6; also ^j)",
         "replay": "verify determinism",
         "context": "what's in the context window (and how full)",
         "inspect": "per-model-call stats: timing, tokens, logprob, finish reason",
@@ -2585,6 +2587,8 @@ class HarnessApp(App):
             self.action_context()
         elif cmd == "inspect":
             self.action_inspect()
+        elif cmd == "lens":
+            self.action_jacobian()
         elif cmd in ("memory", "mem"):
             self.action_memory(arg)
         elif cmd == "review":
@@ -2824,6 +2828,55 @@ class HarnessApp(App):
         self._rendered = 0
         self.query_one(RichLog).clear()
         self._render_pending()
+
+    def _lens_url(self) -> str | None:
+        """The paired lens service URL: from caps (probed) → env → config file."""
+        if self.caps is not None and getattr(self.caps, "lens_url", None):
+            return self.caps.lens_url
+        import json as _json
+        import os
+        from pathlib import Path
+        url = os.environ.get("LO_LENS_URL")
+        if url:
+            return url
+        cfg = Path.home() / ".lo" / "config.json"
+        if cfg.is_file():
+            try:
+                return _json.loads(cfg.read_text()).get("lens_url")
+            except Exception:
+                return None
+        return None
+
+    def _last_turn_text(self) -> str | None:
+        """The most recent answer text (to seed the lens with the real turn)."""
+        try:
+            from ..events.log import MODEL_CALL, RUN_COMPLETED
+            events = self.event_log.events(self._run_ids[-1]) if self._run_ids else []
+            for e in reversed(events):
+                if e.type == RUN_COMPLETED and e.payload.get("answer"):
+                    return e.payload["answer"]
+                if e.type == MODEL_CALL:
+                    resp = e.payload.get("response") or {}
+                    msg = (resp.get("choices") or [{}])[0].get("message") or {}
+                    if msg.get("content"):
+                        return msg["content"]
+        except Exception:
+            pass
+        return None
+
+    def action_jacobian(self) -> None:
+        """Open the Jacobian-lens tab (Rung 6: read/steer the residual stream)."""
+        from .lens_screen import LensScreen
+
+        url = self._lens_url()
+        if not url:
+            self.notify(
+                "no lens service configured. On the model box: `lo lens up`; "
+                "here: `lo config set lens_url http://<box>:8092`. See `lo lens doctor`.",
+                severity="warning", timeout=10)
+            return
+        can_steer = bool(self.caps and getattr(self.caps, "interventions", False))
+        self.push_screen(LensScreen(url, prompt=self._last_turn_text(), can_steer=can_steer))
 
     def action_usage(self) -> None:
         """Open the usage & advantages overlay (cost / determinism / confidence)."""
