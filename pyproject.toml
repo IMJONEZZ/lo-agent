@@ -29,6 +29,9 @@ dependencies = [
 [project.optional-dependencies]
 dspy = ["dspy>=2.6"]
 native = ["torch>=2.4", "transformers>=4.48", "peft>=0.14", "accelerate>=1.0"]
+# Jacobian lens (Rung 6: activations over HTTP). Pure numpy math + gguf I/O;
+# the C++ activation sidecar is built on demand by `lo lens up`, not shipped.
+lens = ["numpy>=1.26", "gguf>=0.10", "httpx>=0.27"]
 # microVM sandbox (libkrun, own kernel per sandbox) — ships the Python SDK; the
 # msb runtime is installed by scripts/install-sandbox.sh (needs Linux+KVM).
 sandbox = ["microsandbox"]

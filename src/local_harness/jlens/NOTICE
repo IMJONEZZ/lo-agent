@@ -1,0 +1,17 @@
+This package vendors and adapts code from:
+
+  jlens-gguf — https://github.com/igorbarshteyn/jlens-gguf
+  Copyright 2026, licensed under the Apache License, Version 2.0.
+
+Adapted files: lens.py, readout.py, model_reader.py, fitting.py (verbatim
+with intra-package import paths updated and an MTP/NextN-aware readable-layer
+count added), native_client.py (ported from `requests` to `httpx`).
+
+The underlying method is the Jacobian lens from Anthropic's "Verbalizable
+Representations Form a Global Workspace in Language Models"
+(https://transformer-circuits.pub/2026/workspace) and the reference
+implementation at https://github.com/anthropics/jacobian-lens (Apache-2.0).
+
+A full copy of the Apache License 2.0 is available at
+https://www.apache.org/licenses/LICENSE-2.0. Original copyright notices are
+retained in the SPDX headers of the vendored files.
