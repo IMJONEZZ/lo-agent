@@ -32,7 +32,11 @@ lo.db-wal
 memory.db
 
 # Demo artifacts (cast recordings, videos, scripts)
-demos/
+# Ignore demos/ contents by default, but track the J-Lens capability gifs +
+# their scripts (embedded in the README) — casts/videos stay ignored.
+demos/*
+!demos/jlens
+demos/jlens/*.cast
 *.cast
 *.mp4
 *.png

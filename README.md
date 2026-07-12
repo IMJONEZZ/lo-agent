@@ -9,6 +9,49 @@ You need Python ≥ 3.12 and any OpenAI-compatible model server — llama.cpp,
 vLLM, LM Studio, or Ollama, on this machine or another box. No local GPU
 required; the model runs wherever your server does.
 
+## See it, don't take our word for it
+
+Every clip below is a live run on a local Qwen3.6-27B — no narration, no
+"✓ it worked" labels. You watch the behavior happen.
+
+**Determinism & exact replay** — the same prompt and seed, twice. Read the
+reasoning trace and the final sentence: character-for-character identical. A
+frontier best-effort seed drifts; a local one is reproducible and `lo replay`
+verifies it.
+
+![determinism: two runs, identical reasoning and answer](demos/jlens/determinism.gif)
+
+**Spec-driven grammar skills** — "list exactly seven" and then *count them*.
+Invalid tokens are masked at decode time, so the output is in the grammar's
+language with probability 1. Frontier models miscount; this one can't.
+
+![grammar: exactly seven items, counted](demos/jlens/grammar.gif)
+
+**Token-level logit pipeline (anti-slop)** — "tapestry" is the model's favorite
+slop word. Ban it, and when it starts to form lo rewinds the KV cache and
+re-samples with its first token masked. Same prompt, same seed — you watch
+"radiant tapestry" become "radiant mosaic" after one rewind, still fluent.
+
+![anti-slop: tapestry banned, rewound, gone](demos/jlens/antislop.gif)
+
+**Uncertainty-aware control flow** — five samples of each question (free, on
+prefix cache). A question with one answer: they agree, trust it. An open one:
+they scatter, the model is guessing. Consensus *is* the confidence — you read
+the spread, not a number.
+
+![uncertainty: agreement vs scatter](demos/jlens/consistency.gif)
+
+**KV-cache tree search & free tokens** — fork one prompt into four candidates
+(the shared prefix is decoded once, so the forks are nearly free), then a
+verifier picks the best. You pick nothing; you watch it pick. A frontier API
+can't fork a cache — it would bill all four prompts in full.
+
+![best-of-N: four forked candidates, verifier picks the winner](demos/jlens/bestof.gif)
+
+**Activations (Rung 6)** — reading and steering the residual stream itself — are
+shown in the [J-Lens](#j-lens--read-and-steer-the-residual-stream-access-ladder-rung-6)
+section below.
+
 ## Installation
 
 ### One-liner
@@ -111,6 +154,50 @@ The pillars, roughly in dependency order:
     (`lo tui --db proxy.db`) all stream in live. `ctrl+r` replays the
     selected run against the server and reports whether it's bit-identical.
 
+## J-Lens — read and steer the residual stream (access-ladder Rung 6)
+
+Frontier APIs hand you the token distribution at most. A local GGUF has more
+underneath it: the **residual stream** itself. `lo lens` pairs a small
+activation sidecar with your model so you can *watch* what the model is thinking
+layer by layer — the [Jacobian lens](https://transformer-circuits.pub/2026/workspace)
+from Anthropic's global-workspace work — and then **steer, ablate, or swap**
+concepts mid-generation. No labels claiming it worked; you watch the sentence
+change:
+
+![J-Lens: see the J-space, then steer it](demos/jlens/jlens.gif)
+
+*Live on a quantized Qwen3.6-27B (MTP): the lens shows ' Euro' winning at the
+output while ' euro'/' lira' contend in the workspace band; then adding the
+' yen' direction to the residual stream makes the same prompt answer "yen", and
+ablating ' Euro' removes it entirely — the model stays fluent throughout.*
+
+```bash
+# on the model box (needs the GGUF + a C++ toolchain; builds the sidecar once):
+lo lens up --llama-server http://127.0.0.1:8080     # → lens service on :8092
+lo lens fit --model model.gguf --corpus wikitext:100 -o lens.gguf   # optional; sharper readouts
+
+# from anywhere:
+lo config set lens_url http://<model-box>:8092
+lo lens gen "…the currency of Italy is the" --steer ' yen' --alpha 3   # A/B, baseline vs steered
+lo tui                                                # ctrl+j opens the live heatmap tab
+```
+
+It reaches your **existing** server three ways, no rewrite: a llama.cpp
+**control vector** (`lo lens export cvec …` → one relaunch flag), an
+**abliterated GGUF** (`lo lens export abliterate …` → a new model any server
+loads, incl. LM Studio/Ollama), or an **`LD_PRELOAD` shim** (`lo lens shim …` →
+live edits inside your own `llama-server`, one restart):
+
+![LD_PRELOAD shim steering a stock llama.cpp binary](demos/jlens/shim.gif)
+
+*The shim interposes context creation in a stock llama.cpp program and edits
+the residual stream mid-graph — the token ids it samples change, no fork of
+llama.cpp, one env var.*
+
+vLLM/safetensors get an exact causal lens via `lo lens fit --hf`. Everything
+gates on a capability probe and degrades honestly. Needs the `lens` extra:
+`uv sync --extra lens`.
+
 ## TUI
 
 ```bash
@@ -169,7 +256,10 @@ One OpenAI-compatible client + a capability prober + thin per-server adapters
 | 1 | + seed (verified live), logprobs | bit-identical replay, uncertainty signals |
 | 2 | + grammar, logit_bias, sampler params, raw completion | CFG skills, sampler zoo, think-budget control |
 | 3 | + KV/slot snapshots or parallel n | cheap tree search, fork/backtrack |
-| 4 | in-process model (Phase 5) | steering, LoRA, arbitrary logit processors |
+| 4 | in-process model **or a paired J-Lens service** | activation read/steer, LoRA, arbitrary logit processors |
+
+Tier 4 is reached two ways: the in-process native backend, **or** a Jacobian-lens
+service paired with a GGUF endpoint — activation access over HTTP (see below).
 
 ## Usage
 
