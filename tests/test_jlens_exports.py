@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 pytest.importorskip("numpy")
 pytest.importorskip("gguf")
+
+import numpy as np  # noqa: E402
 
 from local_harness.jlens import exports  # noqa: E402
 from local_harness.jlens.lens import JacobianLensGGUF  # noqa: E402

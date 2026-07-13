@@ -6,12 +6,14 @@ LensReadout as the GGUF-native regression lens. Skips without the native extra.
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
+pytest.importorskip("numpy")
 pytest.importorskip("torch")
 pytest.importorskip("transformers")
 pytest.importorskip("gguf")
+
+import numpy as np  # noqa: E402
 
 import torch  # noqa: E402
 import transformers  # noqa: E402

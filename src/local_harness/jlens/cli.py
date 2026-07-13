@@ -305,9 +305,21 @@ def cmd_shim(args) -> None:
     print("  write steer.bin with `lo lens export` directions (or the Python API).")
 
 
+# subcommands whose imports need the lens extra (numpy/gguf); doctor/status/gen
+# talk HTTP only and shim just compiles C++.
+_NEEDS_LENS_EXTRA = {"up", "fit", "inspect", "export"}
+
+
 def run(args) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s",
                         datefmt="%H:%M:%S")
+    if args.lens_action in _NEEDS_LENS_EXTRA:
+        from local_harness.jlens import _EXTRA_MSG, missing_lens_deps
+
+        missing = missing_lens_deps()
+        if missing:
+            sys.exit(f"error: `lo lens {args.lens_action}` needs "
+                     f"{' and '.join(missing)} — {_EXTRA_MSG}")
     {"up": cmd_up, "doctor": cmd_doctor, "status": cmd_status, "fit": cmd_fit,
      "inspect": cmd_inspect, "gen": cmd_gen, "export": cmd_export,
      "shim": cmd_shim}[args.lens_action](args)

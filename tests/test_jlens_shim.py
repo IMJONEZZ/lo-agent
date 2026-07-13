@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import struct
 
-import numpy as np
 import pytest
 
 pytest.importorskip("numpy")
+
+import numpy as np  # noqa: E402
 
 from local_harness.jlens import manager  # noqa: E402
 

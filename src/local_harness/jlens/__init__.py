@@ -17,7 +17,21 @@ _EXTRA_MSG = (
     "the Jacobian lens needs the 'lens' extra (numpy + gguf). Install it:\n"
     "    uv sync --extra lens        # from a source checkout\n"
     "    uv tool install 'lo-agent[lens]'\n"
+    "    brew upgrade lo-agent       # Homebrew ships it since 0.2.2_1\n"
 )
+
+
+def missing_lens_deps() -> list[str]:
+    """Names from the lens extra that aren't importable (empty = all good)."""
+    import importlib.util
+
+    def _have(mod: str) -> bool:
+        try:
+            return importlib.util.find_spec(mod) is not None
+        except ModuleNotFoundError:
+            return False
+
+    return [m for m in ("numpy", "gguf") if not _have(m)]
 
 
 def __getattr__(name: str):

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 pytest.importorskip("numpy")
 pytest.importorskip("gguf")
 pytest.importorskip("starlette")
+
+import numpy as np  # noqa: E402
 
 from starlette.testclient import TestClient  # noqa: E402
 

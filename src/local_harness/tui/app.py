@@ -2866,6 +2866,16 @@ class HarnessApp(App):
 
     def action_jacobian(self) -> None:
         """Open the Jacobian-lens tab (Rung 6: read/steer the residual stream)."""
+        from ..jlens import missing_lens_deps
+
+        missing = missing_lens_deps()
+        if missing:
+            self.notify(
+                f"the lens tab needs {' and '.join(missing)} — install the lens "
+                "extra: `uv tool install 'lo-agent[lens]'` (Homebrew ships it "
+                "since 0.2.2_1: `brew upgrade lo-agent`).",
+                severity="warning", timeout=10)
+            return
         from .lens_screen import LensScreen
 
         url = self._lens_url()
