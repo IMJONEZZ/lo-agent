@@ -302,3 +302,38 @@ async def test_agent_skips_post_sampling_probs_when_unsupported(tmp_path):
     assert mock.post_sampling_requests == 0
     calls = log.events(result.run_id, type=MODEL_CALL)
     assert all(c.payload["logprob_summary"]["post_sampling"] is False for c in calls)
+
+
+async def test_final_step_warning_lets_the_model_land(tmp_path):
+    # With the budget at 3, the harness warns the model before its last call so
+    # the run ends with an answer instead of "max_steps exceeded".
+    from local_harness.agent.loop import FINAL_STEP_NOTE
+
+    log = EventLog(tmp_path / "e.db")
+    mock = MockLlamaCpp(script=SCRIPT)
+    agent = make_agent(mock, log)
+    agent.max_steps = 3
+    result = await agent.run("compute (2+3) then multiply by 7")
+
+    assert result.status == "completed"
+    assert result.answer == "The answer is 35."
+    # injected as a user turn on exactly the final budgeted call
+    final_msgs = mock.chat_bodies[-1]["messages"]
+    assert any(m["role"] == "user" and m.get("content") == FINAL_STEP_NOTE
+               for m in final_msgs)
+    for body in mock.chat_bodies[:-1]:
+        assert all(m.get("content") != FINAL_STEP_NOTE for m in body["messages"])
+
+
+async def test_max_steps_still_fails_if_the_model_keeps_calling(tmp_path):
+    from local_harness.agent.loop import FINAL_STEP_NOTE
+
+    log = EventLog(tmp_path / "e.db")
+    mock = MockLlamaCpp(script=SCRIPT)
+    agent = make_agent(mock, log)
+    agent.max_steps = 2  # SCRIPT's first two turns are both tool calls
+    result = await agent.run("compute (2+3) then multiply by 7")
+
+    assert result.status == "max_steps"
+    assert any(m.get("content") == FINAL_STEP_NOTE
+               for m in mock.chat_bodies[-1]["messages"])

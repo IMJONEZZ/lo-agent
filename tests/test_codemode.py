@@ -146,3 +146,17 @@ def test_manager_code_mode_override(tmp_path):
     mgr, _ = make_manager(tmp_path)  # its factory builds classic agents (code_mode=False)
     assert mgr._agent_for("r").code_mode is False          # factory default
     assert mgr._agent_for("r", code_mode=True).code_mode is True  # per-request override
+
+
+def test_code_mode_is_fronted_in_the_system_prompt():
+    # The run_code tool description alone isn't enough: local models weight the
+    # system prompt over tool schemas, so code-mode usage (chain many calls per
+    # block, turns are budgeted) must be stated there too.
+    coded = Agent(None, _reg(), EventLog(":memory:"), capabilities=Capabilities(),
+                  code_mode=True)
+    sys_msg = coded._system_message("task").content
+    assert "run_code" in sys_msg and "ONE run_code block" in sys_msg
+
+    classic = Agent(None, _reg(), EventLog(":memory:"), capabilities=Capabilities(),
+                    code_mode=False)
+    assert "run_code" not in classic._system_message("task").content

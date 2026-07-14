@@ -617,7 +617,7 @@ class HarnessApp(App):
         client: OpenAICompatClient,
         db_path: str,
         *,
-        max_steps: int = 20,
+        max_steps: int = 95,
         use_guardrails: bool = True,
         required_steps: list[str] | None = None,
         terminal_tools: frozenset[str] = frozenset(),

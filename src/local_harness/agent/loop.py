@@ -50,6 +50,27 @@ DEFAULT_SYSTEM_PROMPT = (
     "complete, reply with the final answer and no tool calls."
 )
 
+# Fronted in the system message when code-mode is on. The run_code tool
+# description carries the full API reference, but many local models weight the
+# system prompt far more than tool schemas (and some chat templates render
+# schemas poorly) — without this, they fall back to timid one-call-per-step
+# behavior and burn the step budget.
+CODE_MODE_SYSTEM_NOTE = (
+    "Code mode is ON: your only tool is `run_code` — write Python and `await` "
+    "the `tools.*` functions listed in its description. Chain as much work as "
+    "possible into ONE run_code block (loops, conditionals, many tool calls): "
+    "your number of turns is budgeted, the amount of code per block is not. "
+    "`print(...)` anything you need to see; end with `return <value>`."
+)
+
+# Injected as a user turn before the model's last budgeted call, so the run
+# ends with an answer instead of a tool call whose result nobody will see.
+FINAL_STEP_NOTE = (
+    "This is your FINAL turn — the step budget is exhausted after this reply. "
+    "Do not call tools. Reply now with your best final answer from what you "
+    "already know, noting anything left unverified."
+)
+
 
 import json as _json
 
@@ -96,7 +117,7 @@ class Agent:
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         sampling: SamplingParams | None = None,
         base_seed: int = 1,
-        max_steps: int = 20,
+        max_steps: int = 95,
         policy: StepPolicy | None = None,
         guardrails_factory: Callable[[], Guardrails] | None = None,
         context_budget: int | None = None,
@@ -215,6 +236,8 @@ class Agent:
         """System prompt + frozen self-editing memory + lessons retrieved for the
         task (run-start, so it stays inside determinism/replay)."""
         content = self.system_prompt
+        if self.code_mode:
+            content = f"{content}\n\n{CODE_MODE_SYSTEM_NOTE}"
         if self.notebook is not None:
             block = self.notebook.system_block()
             if block:
@@ -319,6 +342,12 @@ class Agent:
                 if (self.context_budget is not None
                         and estimate_tokens(messages) > self.context_budget):
                     messages = await self._compact(run_id, messages)
+                if call_index == self.max_steps - 1:
+                    # Same shape as an inbox injection, so resume/replay
+                    # reconstruction stays faithful.
+                    messages.append(Message(role="user", content=FINAL_STEP_NOTE))
+                    self.log.append(run_id, USER_MESSAGE, {"content": FINAL_STEP_NOTE,
+                                                           "source": "harness"})
                 response, call_index = await self._model_call(run_id, messages, call_index)
 
                 if guardrails is None:
