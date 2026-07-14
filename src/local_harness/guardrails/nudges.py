@@ -59,3 +59,12 @@ def prerequisite_nudge(tool_name: str, missing: list[str]) -> str:
         f"You cannot call {tool_name} yet. You must first call: "
         f"{', '.join(missing)}. Call the prerequisite tool now."
     )
+
+
+def doom_loop_nudge(tool_name: str, n: int) -> str:
+    return (
+        f"You have called {tool_name} with the same arguments {n} times — it is "
+        "not making progress. Stop repeating it: change the arguments, try a "
+        "different approach, or finish with a plain final answer stating what you "
+        "found and what is still blocked. Do NOT repeat that exact call."
+    )

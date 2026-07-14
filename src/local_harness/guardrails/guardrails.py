@@ -12,7 +12,8 @@ from typing import Literal
 
 from ..inference.types import Message, ToolCallRequest
 from .errors import ErrorTracker
-from .nudges import Nudge
+from .loops import LoopDetector
+from .nudges import Nudge, doom_loop_nudge
 from .steps import StepEnforcer
 from .validator import ResponseValidator
 
@@ -44,11 +45,14 @@ class Guardrails:
         max_retries: int = 3,
         max_tool_errors: int = 2,
         max_premature_attempts: int = 3,
+        max_repeats: int = 3,
+        max_loop: int = 6,
     ):
         self.validator = ResponseValidator(tool_names, rescue_enabled=rescue_enabled)
         self.steps = StepEnforcer(required_steps, terminal_tools, prerequisites,
                                   max_premature_attempts)
         self.errors = ErrorTracker(max_retries, max_tool_errors)
+        self.loops = LoopDetector(max_repeats=max_repeats, hard_cap=max_loop)
 
     def check(self, message: Message) -> CheckResult:
         validation = self.validator.validate(message)
@@ -84,6 +88,19 @@ class Guardrails:
                     f"pending steps: {self.steps.pending()}"
                 ))
             return CheckResult("nudge", nudge=nudge)
+
+        loop = self.loops.inspect(validation.tool_calls or [])
+        if loop is not None:
+            action, tc, n = loop
+            if action == "fatal":
+                return CheckResult("fatal", reason=(
+                    f"doom loop: {tc.name} called {n} times with identical arguments"
+                ))
+            # role="tool" so the repeated call's channel stays paired (like the
+            # prerequisite nudge) — the model reads it as that call's result.
+            return CheckResult("nudge", nudge=Nudge(
+                role="tool", kind="loop", tool_call_id=tc.id,
+                content=doom_loop_nudge(tc.name, n)))
 
         return CheckResult("execute", tool_calls=validation.tool_calls,
                            rescued=validation.rescued)

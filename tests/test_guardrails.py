@@ -118,6 +118,51 @@ def test_guardrails_tool_error_budget():
     assert g2.record(["calculator"], had_errors=True) is None
 
 
+# --- doom-loop detection --------------------------------------------------
+
+
+def test_loop_detector_escalates_then_fatal():
+    from local_harness.guardrails.loops import LoopDetector
+
+    d = LoopDetector(max_repeats=3, hard_cap=5)
+    tc = ToolCallRequest("1", "read_file", '{"path": "x"}')
+    assert d.inspect([tc]) is None       # 1
+    assert d.inspect([tc]) is None       # 2
+    assert d.inspect([tc])[0] == "nudge"  # 3 → nudge once
+    assert d.inspect([tc]) is None       # 4 → already nudged, tolerated
+    assert d.inspect([tc])[0] == "fatal"  # 5 → hard cap
+
+
+def test_loop_detector_distinguishes_args():
+    from local_harness.guardrails.loops import LoopDetector
+
+    d = LoopDetector(max_repeats=2, hard_cap=4)
+    a = ToolCallRequest("1", "read_file", '{"path": "a"}')
+    b = ToolCallRequest("2", "read_file", '{"path": "b"}')
+    assert d.inspect([a]) is None
+    assert d.inspect([b]) is None            # different args — independent count
+    assert d.inspect([a])[0] == "nudge"      # a's 2nd → trips; b untouched
+
+
+def test_guardrails_doom_loop_nudge_then_fatal():
+    g = Guardrails(TOOLS, max_repeats=2, max_loop=3)
+    msg = Message(role="assistant",
+                  tool_calls=[ToolCallRequest("1", "read_file", '{"path": "x"}')])
+    assert g.check(msg).action == "execute"      # 1
+    r2 = g.check(msg)
+    assert r2.action == "nudge" and r2.nudge.kind == "loop"  # 2 → nudge
+    assert g.check(msg).action == "fatal"        # 3 → doom loop fatal
+
+
+def test_guardrails_doom_loop_ignores_varied_calls():
+    g = Guardrails(TOOLS, max_repeats=2, max_loop=3)
+    for path in ("a", "b", "c", "d"):
+        msg = Message(role="assistant",
+                      tool_calls=[ToolCallRequest("1", "read_file",
+                                                  f'{{"path": "{path}"}}')])
+        assert g.check(msg).action == "execute"  # distinct args never trip
+
+
 # --- agent integration ----------------------------------------------------
 
 
@@ -183,6 +228,20 @@ async def test_agent_fatal_on_garbage_loop(tmp_path):
     assert result.status == "fatal"
     run = log.runs()[0]
     assert log.run(run.run_id).status == "failed"
+
+
+async def test_agent_fatal_on_repeated_identical_call(tmp_path):
+    """Model repeats one SUCCESSFUL tool call forever; the doom-loop guard stops
+    it. The error budget can't — each call succeeds, so had_errors stays False."""
+    script = {seed: chat_response(
+        tool_calls=[(f"c{seed}", "calculator", '{"expression": "2+2"}')])
+        for seed in range(1, 20)}
+    log = EventLog(tmp_path / "e.db")
+    result = await _agent(script, log, max_repeats=2, max_loop=4).run("loop forever")
+    assert result.status == "fatal"
+    kinds = [e.payload.get("kind") for e in log.events(result.run_id, type=GUARDRAIL)]
+    assert "loop" in kinds  # a doom-loop nudge fired before the fatal stop
+    assert log.run(result.run_id).status == "failed"
 
 
 async def test_agent_resume_rebuilds_step_state(tmp_path):
