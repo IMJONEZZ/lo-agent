@@ -213,9 +213,47 @@ async def test_permission_request_deny(tmp_path):
 
 
 async def test_permission_denied_with_no_subscriber(tmp_path):
-    mgr, _ = _capturing_manager(tmp_path)
+    mgr, _ = _capturing_manager(tmp_path)  # non-interactive → instant deny (headless)
     run_id = mgr.bus.create_run("t")
     assert await mgr.request_permission(run_id, "bash", "{}") is False  # nobody to ask
+
+
+async def test_interactive_permission_waits_for_late_subscriber(tmp_path):
+    """Regression: an ask-tier tool that fires while the client's SSE subscription
+    is momentarily detached must NOT auto-deny. An interactive manager waits for a
+    subscriber to (re)attach, then publishes the request and resolves it — instead
+    of the instant deny that produced the code-mode denial cascade."""
+    log = EventLog(tmp_path / "e.db")
+    bus = EventBus(log)
+    mgr = SessionManager(bus, lambda *a, **k: None,
+                         interactive_permissions=True, permission_timeout=5.0)
+    run_id = bus.create_run("t")
+    assert bus.subscriber_count(run_id) == 0  # nobody attached at ask time
+
+    asker = asyncio.ensure_future(mgr.request_permission(run_id, "bash", "{}"))
+    await asyncio.sleep(0.2)
+    assert not asker.done()  # waiting for a subscriber, not denying
+
+    # client (re)connects; the request is published to it and resolves normally
+    watcher = asyncio.ensure_future(_await_permission_request(mgr, run_id))
+    for _ in range(200):
+        if bus.subscriber_count(run_id) > 0:
+            break
+        await asyncio.sleep(0.005)
+    req_id, _ = await watcher
+    assert mgr.resolve_permission(req_id, True) is True
+    assert await asker is True
+
+
+async def test_interactive_permission_denies_if_no_subscriber_appears(tmp_path):
+    """Interactive, but no client ever attaches: deny after the timeout so the run
+    fails safe instead of hanging forever."""
+    log = EventLog(tmp_path / "e.db")
+    bus = EventBus(log)
+    mgr = SessionManager(bus, lambda *a, **k: None,
+                         interactive_permissions=True, permission_timeout=0.2)
+    run_id = bus.create_run("t")
+    assert await mgr.request_permission(run_id, "bash", "{}") is False
 
 
 def test_resolve_unknown_permission_is_false(tmp_path):

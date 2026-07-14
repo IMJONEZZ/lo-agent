@@ -1082,25 +1082,54 @@ class HarnessApp(App):
     async def _server_stream(self, run_id: str) -> None:
         """Subscribe to the session's SSE stream; mirror persisted events into the
         local log (so _tick/_render_pending render them) and feed ephemeral token /
-        tool deltas into the same live-render hooks the in-process path uses."""
+        tool deltas into the same live-render hooks the in-process path uses.
+
+        Reconnects if the stream drops before the run reaches a terminal event: the
+        server denies ask-tier tools whenever no client is subscribed, so a silent
+        mid-run subscription drop would auto-deny every approval for the rest of the
+        run (the code-mode denial cascade). Reconnects take live events only —
+        replaying persisted ones would double-import them into the remote mirror."""
+        import asyncio as _aio
         import httpx
 
-        url = f"{self.server}/session/{run_id}/events?replay=1&once=1"
-        try:
-            async with httpx.AsyncClient(timeout=None) as c:
-                async with c.stream("GET", url) as resp:
-                    resp.raise_for_status()
-                    etype = None
-                    async for line in resp.aiter_lines():
-                        if line.startswith("event:"):
-                            etype = line.split(":", 1)[1].strip()
-                        elif line.startswith("data:"):
-                            data = json.loads(line[5:].strip())
-                            self._ingest_server_event(
-                                run_id, etype, data.get("payload", {})
-                            )
-        except Exception as e:
-            self.notify(f"stream ended: {e}", severity="warning")
+        attempt = 0
+        while True:
+            replay = 1 if attempt == 0 else 0  # catch up once; reconnects are live-only
+            url = f"{self.server}/session/{run_id}/events?replay={replay}&once=1"
+            terminal = False
+            try:
+                async with httpx.AsyncClient(timeout=None) as c:
+                    async with c.stream("GET", url) as resp:
+                        resp.raise_for_status()
+                        attempt = 0  # a clean connect resets the backoff
+                        etype = None
+                        async for line in resp.aiter_lines():
+                            if line.startswith("event:"):
+                                etype = line.split(":", 1)[1].strip()
+                            elif line.startswith("data:"):
+                                data = json.loads(line[5:].strip())
+                                self._ingest_server_event(
+                                    run_id, etype, data.get("payload", {})
+                                )
+                                if etype in ("run_completed", "run_failed"):
+                                    terminal = True
+            except Exception as e:
+                if terminal:
+                    return
+                attempt += 1
+                if attempt > 20:  # server truly gone — stop trying
+                    self.notify(f"stream ended: {e}", severity="warning")
+                    return
+                await _aio.sleep(min(0.25 * attempt, 3.0))
+                continue
+            # Stream closed cleanly: done if the run finished, else the subscription
+            # dropped mid-run — reconnect so tool-approval keeps working.
+            if terminal:
+                return
+            attempt += 1
+            if attempt > 20:
+                return
+            await _aio.sleep(min(0.25 * attempt, 3.0))
 
     def _ingest_server_event(self, run_id: str, etype: str, payload: dict) -> None:
         if etype == "token_delta":

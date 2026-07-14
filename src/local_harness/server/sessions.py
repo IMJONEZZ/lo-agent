@@ -167,12 +167,37 @@ class SessionManager:
 
         return approve
 
+    async def _await_subscriber(self, run_id: str, timeout: float) -> bool:
+        """Wait (up to `timeout`) for at least one live bus subscriber. PERMISSION_
+        REQUEST is ephemeral, so a subscriber must be attached at publish time or the
+        ask is lost — but a subscriber that raced the run start (or dropped and is
+        reconnecting) shows up within millimeters of a second, so we poll briefly
+        rather than deny outright."""
+        if self.bus.subscriber_count(run_id) > 0:
+            return True
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            await asyncio.sleep(0.05)
+            if self.bus.subscriber_count(run_id) > 0:
+                return True
+        return False
+
     async def request_permission(self, run_id: str, tool: str, arguments: str) -> bool:
         """Ask the connected client(s) to approve a tool call. Publishes a
         PERMISSION_REQUEST over the bus and awaits the client's POST back. Denies
-        if nobody is listening or the client doesn't answer in time — fail-safe."""
+        if the client doesn't answer in time — fail-safe.
+
+        On zero subscribers we distinguish two cases: a headless manager (nobody
+        will ever answer) denies immediately, but an interactive one waits for a
+        subscriber to (re)attach — otherwise a momentary SSE gap at the instant an
+        ask-tier tool fires would auto-deny every such call for the rest of the run,
+        even with a human actively watching (the code-mode denial cascade)."""
         if self.bus.subscriber_count(run_id) == 0:
-            return False  # no one to ask → deny (don't hang a headless run)
+            if not self.interactive_permissions:
+                return False  # headless: no one to ask → deny (don't hang the run)
+            if not await self._await_subscriber(run_id, self.permission_timeout):
+                return False  # interactive, but no client attached within the window
         request_id = uuid.uuid4().hex[:12]
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
         self._pending_perms[request_id] = fut
