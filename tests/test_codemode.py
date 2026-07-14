@@ -156,7 +156,20 @@ def test_code_mode_is_fronted_in_the_system_prompt():
                   code_mode=True)
     sys_msg = coded._system_message("task").content
     assert "run_code" in sys_msg and "ONE run_code block" in sys_msg
+    # a worked few-shot example is included so models see the exact shape
+    assert "await tools.grep(" in sys_msg and "```python" in sys_msg
 
     classic = Agent(None, _reg(), EventLog(":memory:"), capabilities=Capabilities(),
                     code_mode=False)
     assert "run_code" not in classic._system_message("task").content
+
+
+async def test_code_mode_few_shot_example_actually_runs():
+    """The few-shot in the system prompt must be executable as written — a broken
+    example would teach models the wrong shape."""
+    from local_harness.agent.loop import CODE_MODE_SYSTEM_NOTE
+
+    # extract the fenced python block from the note and run it through CodeMode
+    block = CODE_MODE_SYSTEM_NOTE.split("```python\n", 1)[1].split("```", 1)[0]
+    out = await CodeMode(_reg()).run(block)
+    assert not out.startswith("error:") and "[result]" in out
