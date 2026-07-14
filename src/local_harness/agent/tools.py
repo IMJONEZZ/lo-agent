@@ -163,7 +163,23 @@ def calculator(expression: str) -> str:
     return str(_safe_eval(ast.parse(expression, mode="eval")))
 
 
-def read_file(path: str, max_bytes: int = 65536) -> str:
+def _slice_lines(text: str, start_line: int, end_line: int) -> str:
+    """1-indexed inclusive line range. 0/None on either bound means open-ended;
+    both unset returns the text unchanged (whole-file behavior)."""
+    if not start_line and not end_line:
+        return text
+    lines = text.splitlines(keepends=True)
+    lo = max(1, start_line or 1)
+    hi = end_line or len(lines)
+    return "".join(lines[lo - 1:hi])
+
+
+def read_file(path: str, start_line: int = 0, end_line: int = 0,
+              max_bytes: int = 65536) -> str:
+    # With a line range, read the whole file then slice (so the range is reachable
+    # even past max_bytes) and bound the result; otherwise cap the raw read.
+    if start_line or end_line:
+        return _truncate_output(_slice_lines(Path(path).read_text(), start_line, end_line))
     return Path(path).read_text()[:max_bytes]
 
 
@@ -273,16 +289,186 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
     return f"edited {path}"
 
 
+def _parse_patch(patch: str) -> tuple[str | None, list[tuple[list[str], list[str]]]]:
+    """Parse a unified diff into (path-from-+++-header, [(before, after), ...]).
+    before/after are the removed+context and added+context line lists per hunk."""
+    path = None
+    hunks: list[tuple[list[str], list[str]]] = []
+    before: list[str] | None = None
+    after: list[str] | None = None
+    for ln in patch.splitlines():
+        if ln.startswith("--- "):
+            continue
+        if ln.startswith("+++ "):
+            p = ln[4:].strip().split("\t")[0]
+            path = p[2:] if p.startswith(("a/", "b/")) else p
+            continue
+        if ln.startswith("@@"):
+            if before is not None:
+                hunks.append((before, after))
+            before, after = [], []
+            continue
+        if before is None:
+            continue  # preamble before the first hunk
+        if ln.startswith("\\"):
+            continue  # "\ No newline at end of file"
+        tag, content = (ln[0], ln[1:]) if ln[:1] in " +-" else (" ", ln)
+        if tag == " ":
+            before.append(content)
+            after.append(content)
+        elif tag == "-":
+            before.append(content)
+        elif tag == "+":
+            after.append(content)
+    if before is not None:
+        hunks.append((before, after))
+    return path, hunks
+
+
+def _find_block(lines: list[str], block: list[str], start: int) -> int:
+    """Index of the first contiguous occurrence of `block` in `lines` at/after
+    `start`, or -1. Empty block never matches."""
+    if not block:
+        return -1
+    for i in range(start, len(lines) - len(block) + 1):
+        if lines[i:i + len(block)] == block:
+            return i
+    return -1
+
+
+def _apply_unified_diff(text: str, patch: str) -> tuple[str | None, str | None]:
+    """Apply a unified diff by locating each hunk's context+removed block by
+    CONTENT (robust to line-number drift) and swapping in its context+added
+    block. Returns (new_text, None) or (None, error). Never partially writes."""
+    _, hunks = _parse_patch(patch)
+    if not hunks:
+        return None, "no hunks found in patch (expected @@ ... @@ sections)"
+    lines = text.splitlines()
+    cursor = 0
+    for before, after in hunks:
+        if not before:
+            return None, "a hunk has no context or removed lines to locate; add context lines"
+        idx = _find_block(lines, before, cursor)
+        if idx < 0:
+            idx = _find_block(lines, before, 0)  # hunks may be out of order
+        if idx < 0:
+            return None, f"hunk did not apply — context not found near: {before[0][:60]!r}"
+        lines[idx:idx + len(before)] = after
+        cursor = idx + len(after)
+    trailing = "\n" if text.endswith("\n") or not text else ""
+    return "\n".join(lines) + trailing, None
+
+
+def apply_patch(patch: str, path: str = "") -> str:
+    """Apply a unified-diff `patch` to a file. `path` is optional if the patch has
+    a `+++ b/<path>` header. Hunks are located by content, so line numbers need not
+    be exact; if any hunk fails to match, nothing is written and an error explains."""
+    target = path or _parse_patch(patch)[0]
+    if not target:
+        return "error: no path given and no +++ header in patch"
+    p = Path(target)
+    if not p.exists():
+        return f"error: no such file: {target}"
+    new_text, err = _apply_unified_diff(p.read_text(), patch)
+    if err is not None:
+        return f"error: {err}"
+    p.write_text(new_text)
+    return f"patched {target}"
+
+
 _GREP_IGNORE = {".git", ".venv", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache"}
+_IGNORE_FILES = (".gitignore", ".ignore")
+
+
+def _ignore_rule(pat: str) -> tuple[re.Pattern, bool, bool] | None:
+    """Compile one gitignore line to (regex, negate, dir_only). Returns None for
+    blanks/comments. Regex matches a POSIX path relative to the ignore file's root.
+    Unanchored names match at any depth; a leading/internal slash anchors to root."""
+    pat = pat.rstrip()
+    if not pat or pat.startswith("#"):
+        return None
+    negate = pat.startswith("!")
+    if negate:
+        pat = pat[1:]
+    pat = pat.replace("\\ ", " ")
+    dir_only = pat.endswith("/")
+    pat = pat.rstrip("/")
+    anchored = pat.startswith("/") or ("/" in pat)
+    pat = pat.lstrip("/")
+    if not pat:
+        return None
+    # translate the glob body segment-by-segment (git globs don't cross '/' on *)
+    out, i = [], 0
+    while i < len(pat):
+        c = pat[i]
+        if pat[i:i + 3] == "**/":
+            out.append("(?:.*/)?"); i += 3
+        elif pat[i:i + 2] == "**":
+            out.append(".*"); i += 2
+        elif c == "*":
+            out.append("[^/]*"); i += 1
+        elif c == "?":
+            out.append("[^/]"); i += 1
+        else:
+            out.append(re.escape(c)); i += 1
+    body = "".join(out)
+    prefix = "^" if anchored else "(?:^|.*/)"
+    # match the path itself and anything beneath it (so a dir rule ignores its files)
+    regex = re.compile(prefix + body + r"(?:/.*)?$")
+    return regex, negate, dir_only
+
+
+def _load_ignorer(root: Path):
+    """Build an `is_ignored(relpath)` predicate from root-level ignore files
+    (.gitignore, .ignore, .git/info/exclude). Root-level only — nested ignore
+    files are not honored (documented limitation). Last matching rule wins, so
+    `!negations` work."""
+    rules: list[tuple[re.Pattern, bool, bool]] = []
+    sources = [root / f for f in _IGNORE_FILES] + [root / ".git" / "info" / "exclude"]
+    for src in sources:
+        try:
+            for line in src.read_text(errors="ignore").splitlines():
+                rule = _ignore_rule(line)
+                if rule is not None:
+                    rules.append(rule)
+        except OSError:
+            continue
+    if not rules:
+        return None
+
+    def is_ignored(relpath: str) -> bool:
+        ignored = False
+        for regex, negate, _dir_only in rules:
+            if regex.match(relpath):
+                ignored = not negate
+        return ignored
+
+    return is_ignored
+
+
+def _walk_files(root: Path):
+    """Yield files under root, pruning the always-ignore dirs and anything the
+    root ignore files (.gitignore/.ignore) match."""
+    is_ignored = _load_ignorer(root)
+    for f in root.rglob("*"):
+        if not f.is_file() or (_GREP_IGNORE & set(f.parts)):
+            continue
+        if is_ignored is not None:
+            try:
+                rel = f.relative_to(root).as_posix()
+            except ValueError:
+                rel = f.as_posix()
+            if is_ignored(rel):
+                continue
+        yield f
 
 
 def grep(pattern: str, path: str = ".", max_results: int = 200) -> str:
-    """Search file contents for a regex; returns `path:line:text`, ripgrep-style."""
+    """Search file contents for a regex; returns `path:line:text`, ripgrep-style.
+    Skips the default ignore dirs and paths matched by root .gitignore/.ignore."""
     rx = re.compile(pattern)
     root = Path(path)
-    files = [root] if root.is_file() else (
-        f for f in root.rglob("*")
-        if f.is_file() and not (_GREP_IGNORE & set(f.parts)))
+    files = [root] if root.is_file() else _walk_files(root)
     out: list[str] = []
     for f in files:
         try:
@@ -297,8 +483,23 @@ def grep(pattern: str, path: str = ".", max_results: int = 200) -> str:
 
 
 def glob(pattern: str, path: str = ".") -> str:
-    """Find files matching a glob (supports ** for recursive)."""
-    matches = sorted(str(p) for p in Path(path).glob(pattern) if p.is_file())
+    """Find files matching a glob (supports ** for recursive). Skips the default
+    ignore dirs and paths matched by root .gitignore/.ignore."""
+    root = Path(path)
+    is_ignored = _load_ignorer(root)
+    matches = []
+    for p in root.glob(pattern):
+        if not p.is_file() or (_GREP_IGNORE & set(p.parts)):
+            continue
+        if is_ignored is not None:
+            try:
+                rel = p.relative_to(root).as_posix()
+            except ValueError:
+                rel = p.as_posix()
+            if is_ignored(rel):
+                continue
+        matches.append(str(p))
+    matches.sort()
     return _truncate_output("\n".join(matches)) if matches else "no matches"
 
 
@@ -400,6 +601,7 @@ def builtin_tools(sandbox=None) -> list[Tool]:
     # Host default is unchanged.
     bash_fn, read_file_fn, write_file_fn = bash, read_file, write_file
     edit_file_fn, list_dir_fn, grep_fn, glob_fn = edit_file, list_dir, grep, glob
+    apply_patch_fn = apply_patch
     notebook_edit_fn, repl_fn = notebook_edit, repl
     if sandbox is not None and getattr(sandbox, "kind", "host") != "host":
         import shlex
@@ -430,8 +632,12 @@ def builtin_tools(sandbox=None) -> list[Tool]:
                 out = f"[exit {code}]\n{out}".strip()
             return _truncate_output(out) if out else "[no output]"
 
-        async def read_file_fn(path: str, max_bytes: int = 65536) -> str:  # noqa: F811
+        async def read_file_fn(path: str, start_line: int = 0, end_line: int = 0,  # noqa: F811
+                               max_bytes: int = 65536) -> str:
             try:
+                if start_line or end_line:  # read enough to reach the range, then slice
+                    text = await sandbox.read_file(path, max(max_bytes, 1 << 21))
+                    return _truncate_output(_slice_lines(text, start_line, end_line))
                 return _truncate_output(await sandbox.read_file(path, max_bytes))
             except Exception as e:
                 return f"error: {e}"
@@ -461,6 +667,20 @@ def builtin_tools(sandbox=None) -> list[Tool]:
             await sandbox.write_file(path, content.replace(old_string, new_string))
             return f"edited {path}"
 
+        async def apply_patch_fn(patch: str, path: str = "") -> str:  # noqa: F811
+            target = path or _parse_patch(patch)[0]
+            if not target:
+                return "error: no path given and no +++ header in patch"
+            try:
+                text = await sandbox.read_file(target)
+            except Exception as e:
+                return f"error: {e}"
+            new_text, err = _apply_unified_diff(text, patch)
+            if err is not None:
+                return f"error: {err}"
+            await sandbox.write_file(target, new_text)
+            return f"patched {target}"
+
         _excl = " ".join(f"--exclude-dir={shlex.quote(d)}" for d in _GREP_IGNORE)
         _prune = " -o ".join(f"-name {shlex.quote(d)}" for d in _GREP_IGNORE)
 
@@ -489,10 +709,17 @@ def builtin_tools(sandbox=None) -> list[Tool]:
         ),
         Tool(
             name="read_file",
-            description="Read a text file and return its contents.",
+            description=("Read a text file. Optional start_line/end_line (1-indexed, "
+                         "inclusive) return just that range."),
             parameters={
                 "type": "object",
-                "properties": {"path": {"type": "string"}},
+                "properties": {
+                    "path": {"type": "string"},
+                    "start_line": {"type": "integer",
+                                   "description": "first line to read (1-indexed); omit for start of file"},
+                    "end_line": {"type": "integer",
+                                 "description": "last line to read (inclusive); omit for end of file"},
+                },
                 "required": ["path"],
             },
             fn=read_file_fn,
@@ -506,6 +733,23 @@ def builtin_tools(sandbox=None) -> list[Tool]:
                 "required": [],
             },
             fn=list_dir_fn,
+        ),
+        Tool(
+            name="apply_patch",
+            description=("Apply a unified diff (git-style @@ hunks) to a file. Hunks "
+                         "are matched by content, so line numbers need not be exact. "
+                         "Path comes from the +++ header unless you pass `path`. All "
+                         "or nothing: if a hunk fails to match, nothing is written."),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "patch": {"type": "string", "description": "the unified diff text"},
+                    "path": {"type": "string",
+                             "description": "target file; optional if the patch has a +++ header"},
+                },
+                "required": ["patch"],
+            },
+            fn=apply_patch_fn,
         ),
         Tool(
             name="bash",

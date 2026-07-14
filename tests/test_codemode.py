@@ -112,12 +112,13 @@ def test_code_mode_replaces_schemas_with_run_code():
     assert [s["function"]["name"] for s in schemas] == [RUN_CODE_NAME]
     # the api reference (in the description) lists the tools
     desc = schemas[0]["function"]["description"]
-    assert "tools.calculator(expression)" in desc and "tools.read_file(path)" in desc
+    assert "tools.calculator(expression)" in desc
+    assert "tools.read_file(path" in desc  # now also start_line/end_line
 
 
 def test_api_reference_respects_exposed():
     ref = api_reference(_reg(), {"read_file", "calculator"})
-    assert "tools.read_file(path)" in ref and "tools.calculator" in ref
+    assert "tools.read_file(path" in ref and "tools.calculator" in ref
     assert "write_file" not in ref
 
 

@@ -62,7 +62,7 @@ class AgentPreset:
     deny: list[str] = field(default_factory=list)
     default: str = "ask"
     tools: list[str] | None = None  # exposed toolset (None = all)
-    model: str | None = None  # per-agent model (recorded; switching not yet wired)
+    model: str | None = None  # per-agent model override; None → the client's model
 
     def permissions(self, approver=None) -> Permissions:
         return Permissions(allow=list(self.allow), ask=list(self.ask), deny=list(self.deny),
@@ -84,7 +84,7 @@ PRESETS: dict[str, AgentPreset] = {
         allow=_READ_TOOLS + ["memory"], default="ask"),
     "plan": AgentPreset(
         "plan", _PLAN_PROMPT, SamplingParams(temperature=0.1, max_tokens=_MAX),
-        allow=_READ_TOOLS, deny=["write_file", "edit_file", "bash", "webfetch", "web_search"],
+        allow=_READ_TOOLS, deny=["write_file", "edit_file", "apply_patch", "bash", "webfetch", "web_search"],
         default="deny", tools=_READ_TOOLS),
     "explore": AgentPreset(
         "explore", _EXPLORE_PROMPT, SamplingParams(temperature=0.2, max_tokens=_MAX),
@@ -107,7 +107,7 @@ PRESETS: dict[str, AgentPreset] = {
 # Frontmatter → permissions/tools/sampling; body (or `prompt`) → system prompt.
 
 _FILE_PRESETS: dict[str, AgentPreset] = {}
-_PLAN_DENY = ["write_file", "edit_file", "bash", "webfetch", "web_search"]
+_PLAN_DENY = ["write_file", "edit_file", "apply_patch", "bash", "webfetch", "web_search"]
 
 # The trusted read-only safety presets: a file-authored agent must never be able
 # to shadow these (an untrusted repo's `.lo/agents/plan.md` claiming write tools
