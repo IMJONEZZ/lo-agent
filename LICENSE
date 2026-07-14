@@ -1,0 +1,186 @@
+lo-agent Community License
+Version 1.0
+
+Copyright (c) 2026 Chris Brousseau ("Licensor"). All rights reserved.
+
+This license governs use of the accompanying software and its source code
+("the Software"). By downloading, copying, installing, running, or otherwise
+using the Software, you ("You") agree to the terms below. If You do not agree,
+do not use the Software.
+
+The Software is source-available, not open source. The Licensor retains all
+rights not expressly granted here.
+
+--------------------------------------------------------------------------------
+1. DEFINITIONS
+--------------------------------------------------------------------------------
+
+1.1 "Personal Use" means use by a single natural person, acting on their own
+    behalf, for personal, private, hobby, educational, or evaluation purposes
+    that are not commercial and are not for the benefit of any Organization.
+    Use is NOT Personal Use if it is undertaken to generate revenue, in the
+    course of paid or freelance work, or on behalf of or for the benefit of an
+    employer, client, or Organization.
+
+1.2 "Organization" means any entity or group of two or more persons acting in
+    concert, whether or not incorporated and whether or not operated for
+    profit — including companies, partnerships, sole proprietorships with
+    employees or contractors, non-profits, charities, government or public
+    bodies, educational institutions, clubs, associations, and collectives.
+    Any commercial use by a single individual is also treated as use by an
+    Organization for the purposes of this license.
+
+1.3 "Configuration" means using the Software through its documented,
+    officially provided settings, command-line flags, environment variables,
+    configuration files, profiles, and documented extension points, without
+    altering the Software's source code, compiled artifacts, behavior beyond
+    what those options expose, visual appearance, or Branding.
+
+1.4 "Modification" (or to "Customize") means anything beyond Configuration,
+    including but not limited to: altering, adapting, or translating the source
+    code or compiled artifacts; creating derivative works; changing the
+    Software's behavior, features, or workflows other than through
+    Configuration; changing its visual appearance, including colors, themes,
+    layout, typography, or user-interface text; and adding, altering, removing,
+    obscuring, or replacing Branding.
+
+1.5 "Branding" means the names, logos, marks, product identifiers, copyright
+    notices, and attribution identifying the Software or the Licensor —
+    including the name "lo-agent" and the Licensor's name — wherever they
+    appear in the Software, its interfaces, its output, or its documentation.
+
+1.6 "Enterprise License" means a separate written agreement between the
+    Licensor and an Organization granting rights beyond those in this license.
+
+--------------------------------------------------------------------------------
+2. GRANT FOR PERSONAL USE
+--------------------------------------------------------------------------------
+
+Subject to this license, the Licensor grants You, as an individual engaged in
+Personal Use, a worldwide, royalty-free, non-exclusive, non-transferable
+license to use, copy, run, Modify, and Customize the Software for Your Personal
+Use, and to create derivative works from it for Your Personal Use.
+
+You may share verbatim or modified copies with other individuals for their
+Personal Use, provided You do so at no charge, retain this license and all
+Branding and copyright notices intact, and impose these same terms on the
+recipient. This grant does not permit any use by or for an Organization or any
+commercial use.
+
+--------------------------------------------------------------------------------
+3. GRANT FOR ORGANIZATIONS ("AS-IS" USE)
+--------------------------------------------------------------------------------
+
+Subject to this license, the Licensor grants an Organization a worldwide,
+royalty-free, non-exclusive, non-transferable license to install, run, and use
+the Software, including for internal and commercial purposes, PROVIDED THAT:
+
+  (a) the Software is used as-is, unmodified except through Configuration;
+
+  (b) all Branding is retained and displayed as delivered, and is not removed,
+      hidden, obscured, minimized, or replaced; and
+
+  (c) this license and all copyright notices are retained in all copies.
+
+This grant does NOT permit an Organization to Modify or Customize the Software,
+to remove or alter Branding, or to create derivative works. Any of those
+activities requires an Enterprise License.
+
+--------------------------------------------------------------------------------
+4. ENTERPRISE LICENSE REQUIRED FOR CUSTOMIZATION
+--------------------------------------------------------------------------------
+
+If an Organization wishes to Modify or Customize the Software in any way —
+including changing its behavior beyond Configuration, changing its colors or
+appearance, or altering, removing, or replacing its Branding — the Organization
+must first obtain an Enterprise License from the Licensor. Enterprise terms,
+including scope and fees, are negotiated separately.
+
+To request an Enterprise License, contact:
+
+    Chris Brousseau
+    chrisbrousseau304@gmail.com
+
+--------------------------------------------------------------------------------
+5. REDISTRIBUTION
+--------------------------------------------------------------------------------
+
+You may redistribute verbatim, unmodified copies of the Software provided that
+this license and all Branding and copyright notices are included and intact,
+and that You do not charge a fee for the Software itself. You may not
+redistribute Modified or Customized versions of the Software except as
+expressly permitted under Section 2 (Personal Use) or under an Enterprise
+License. You may not sublicense, sell, rent, lease, or offer the Software as a
+paid product or service except under an Enterprise License.
+
+--------------------------------------------------------------------------------
+6. CONTRIBUTIONS
+--------------------------------------------------------------------------------
+
+If You submit any contribution (code, documentation, or other material) to the
+Software, You grant the Licensor a perpetual, worldwide, royalty-free,
+irrevocable, sublicensable, and transferable license to use, reproduce, modify,
+distribute, relicense, and commercially exploit that contribution as part of
+the Software, including under this license, under an Enterprise License, or
+under any other terms the Licensor chooses. You represent that You have the
+right to grant this license for Your contribution.
+
+--------------------------------------------------------------------------------
+7. TRADEMARKS
+--------------------------------------------------------------------------------
+
+This license does not grant permission to use the Licensor's trade names,
+trademarks, service marks, or product names, except as required to retain and
+display Branding under Sections 2 and 3, or as expressly permitted by an
+Enterprise License.
+
+--------------------------------------------------------------------------------
+8. RESERVATION OF RIGHTS
+--------------------------------------------------------------------------------
+
+All rights not expressly granted in this license are reserved by the Licensor.
+This license does not grant You any rights under the Licensor's patents, except
+the implied license necessary to exercise the rights expressly granted above.
+
+--------------------------------------------------------------------------------
+9. TERMINATION
+--------------------------------------------------------------------------------
+
+This license and the rights granted to You terminate automatically if You
+breach any of its terms, including any unauthorized Modification, Customization,
+removal of Branding, or use by or for an Organization beyond the grant in
+Section 3. Upon termination You must cease all use of the Software and destroy
+all copies in Your possession or control. Sections 6 through 12 survive
+termination.
+
+--------------------------------------------------------------------------------
+10. DISCLAIMER OF WARRANTY
+--------------------------------------------------------------------------------
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT. YOU ASSUME THE
+ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE SOFTWARE.
+
+--------------------------------------------------------------------------------
+11. LIMITATION OF LIABILITY
+--------------------------------------------------------------------------------
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL THE LICENSOR BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING BUT NOT LIMITED TO LOSS OF PROFITS, DATA, OR
+BUSINESS INTERRUPTION) ARISING IN ANY WAY OUT OF THE USE OF OR INABILITY TO USE
+THE SOFTWARE, WHETHER IN CONTRACT, TORT, OR OTHERWISE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGES.
+
+--------------------------------------------------------------------------------
+12. GENERAL
+--------------------------------------------------------------------------------
+
+This license is the entire agreement between You and the Licensor regarding the
+Software and supersedes any prior understanding, except for any Enterprise
+License, which controls to the extent of any conflict. If any provision is held
+unenforceable, the remaining provisions remain in effect. The Licensor's
+failure to enforce any provision is not a waiver of it. The Licensor may
+release future versions of the Software under different terms; this license
+governs the version with which it was distributed.

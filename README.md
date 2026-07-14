@@ -357,3 +357,17 @@ brew uninstall lo-agent && brew untap IMJONEZZ/lo-agent # brew installs
 Your data is never touched by an uninstall: `~/.lo/` holds config and
 memory (`rm -rf ~/.lo` if you want it gone), and each project keeps its
 event log in a local `lo.db`.
+
+## License
+
+lo-agent is **source-available**, not open source. See [LICENSE](LICENSE) for
+the full terms — the short version:
+
+- **Individuals** may use, run, and freely customize lo-agent for personal,
+  non-commercial use.
+- **Organizations** (any company, non-profit, club, or commercial use — even a
+  solo freelancer) may run it **as-is for free**, including commercially, as
+  long as the lo-agent branding stays visible.
+- **Customizing** anything — code, behavior, colors, or branding — on behalf of
+  an organization requires an **enterprise license**. Reach out to
+  Chris Brousseau at chrisbrousseau304@gmail.com to arrange one.
