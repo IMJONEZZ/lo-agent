@@ -816,7 +816,7 @@ wheels = [
 
 [[package]]
 name = "lo-agent"
-version = "0.2.2"
+version = "0.2.21"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
