@@ -1031,6 +1031,7 @@ def _build_session_app(
             compact_fraction=getattr(args, "compact_fraction", 0.85),
             code_mode=getattr(args, "code_mode", True),
             sandbox=sandbox,
+            model=p.model,  # per-agent model override (preset `model:`)
             on_token=on_token,
             on_tool=on_tool,
             on_notice=on_notice,

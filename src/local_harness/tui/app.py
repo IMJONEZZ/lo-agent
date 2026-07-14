@@ -1410,6 +1410,7 @@ class HarnessApp(App):
             on_token=self._on_token,
             code_mode=self._code_mode,
             sandbox=self._sandbox,
+            model=preset.model,  # per-agent model override (preset `model:`)
             notebook=self.notebook,
             exposed_tools=preset.exposed(),
             retrieval=self._memory,

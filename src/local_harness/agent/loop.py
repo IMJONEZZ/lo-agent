@@ -153,9 +153,15 @@ class Agent:
         on_compact: Callable[[str, dict[str, Any]], None] | None = None,
         code_mode: bool = False,
         sandbox=None,
+        model: str | None = None,
     ):
         self.client = client
         self.tools = tools
+        # Per-agent model override (preset `model:`). None → use the client's
+        # model. Sent as the request's model field, so a multi-model server
+        # (LM Studio, a router) can serve e.g. plan on a big model, build on a
+        # fast one. Capabilities stay those probed for the client's model.
+        self.model = model
         # Code-mode: expose ONE run_code tool the model writes Python against,
         # instead of N per-tool schemas (fewer round-trips / tokens). Off by
         # default for the library; the TUI/CLI/server turn it on.
@@ -536,7 +542,7 @@ class Agent:
         request = GenerationRequest(
             messages=messages, sampling=sampling, tools=self._tool_schemas()
         )
-        body = request.to_body(self.client.model)
+        body = request.to_body(self.model or self.client.model)
         if self.on_token is not None:
             self.on_token("start", "")
             # The `logprobs + tools + stream` combo is the single least-portable

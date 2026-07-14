@@ -304,6 +304,25 @@ async def test_agent_skips_post_sampling_probs_when_unsupported(tmp_path):
     assert all(c.payload["logprob_summary"]["post_sampling"] is False for c in calls)
 
 
+async def test_per_agent_model_override(tmp_path):
+    """A preset's model override is sent as the request's model field; without it
+    the client's model is used."""
+    log = EventLog(tmp_path / "e.db")
+    script = {1: chat_response(content="done")}
+
+    mock = MockLlamaCpp(script=script)
+    client = OpenAICompatClient("http://test", "primary", transport=mock.transport())
+    await Agent(client, ToolRegistry(builtin_tools()), log, capabilities=TIER1_CAPS,
+                base_seed=1).run("hi")
+    assert mock.chat_bodies[-1]["model"] == "primary"
+
+    mock2 = MockLlamaCpp(script=script)
+    client2 = OpenAICompatClient("http://test", "primary", transport=mock2.transport())
+    await Agent(client2, ToolRegistry(builtin_tools()), log, capabilities=TIER1_CAPS,
+                base_seed=1, model="planner").run("hi")
+    assert mock2.chat_bodies[-1]["model"] == "planner"
+
+
 async def test_final_step_warning_lets_the_model_land(tmp_path):
     # With the budget at 3, the harness warns the model before its last call so
     # the run ends with an answer instead of "max_steps exceeded".
