@@ -8,7 +8,9 @@ and build steer/ablate/swap interventions (applied via the service). Read-only
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import time
 
 import httpx
 import numpy as np
@@ -116,6 +118,12 @@ class LensScreen(ModalScreen[None]):
         self._n_predict = 0
         self._show_help = False
         self._live_pushed = False
+        self._timings: dict = {}      # last slice's server-side ms — feeds estimates
+        self._last_n_prompt = 0
+        self._busy: str | None = None  # base status while a request is in flight
+        self._busy_t0 = 0.0
+        self._inflight: asyncio.Task | None = None
+        self._lens_desc = ""           # "identity lens (unfitted)" vs a fitted one
         self.vocab: list[str] = []
         self.slice = None
         self.top_ids = None
@@ -146,8 +154,13 @@ class LensScreen(ModalScreen[None]):
     async def on_mount(self) -> None:
         self.query_one("#lensinput").display = False
         self.query_one("#lensbody").focus()
+        self.set_interval(1.0, self._tick_busy)
         try:
             self.vocab = await self.client.vocab()
+            lm = (await self.client.props()).get("lens") or {}
+            self._lens_desc = ("identity lens (unfitted)"
+                               if lm.get("method") in (None, "", "identity")
+                               else f"{lm['method']} lens")
         except Exception as e:  # noqa: BLE001
             self._status = f"lens error: {e}"
             self._repaint()
@@ -155,14 +168,30 @@ class LensScreen(ModalScreen[None]):
         if not self._tokens and not self._prompt:
             self._repaint()  # empty state — never analyze text the user didn't pick
             return
-        try:
-            await self._run_slice()
-        except Exception as e:  # noqa: BLE001
-            self._status = f"lens error: {e}"
+        await self._safe_slice()
+
+    def _tick_busy(self) -> None:
+        """Elapsed-seconds ticker: a multi-minute slice must never look frozen."""
+        if self._busy:
+            self._status = f"{self._busy} · {int(time.monotonic() - self._busy_t0)}s"
             self._repaint()
 
+    def _estimate_s(self) -> float | None:
+        """Predict the next slice from the last one's server timings — every
+        slice re-prefills the prompt, and decode runs at roughly prefill speed."""
+        prompt_ms = (self._timings or {}).get("prompt_ms")
+        if not prompt_ms or not self._last_n_prompt:
+            return None
+        per_tok = prompt_ms / self._last_n_prompt
+        return per_tok * (self._last_n_prompt + self._n_predict) / 1000
+
     async def _run_slice(self):
-        self._status = ("generating…" if self._n_predict else "computing slice…")
+        base = ("generating…" if self._n_predict else "computing slice…")
+        est = self._estimate_s()
+        if est:
+            base += f" (~{est:.0f}s expected)"
+        self._busy, self._busy_t0 = base, time.monotonic()
+        self._status = base
         self._repaint()
         body = {"stride": 4, "top_n": 5, "use_lens": self.use_lens}
         if self._n_predict:
@@ -173,7 +202,12 @@ class LensScreen(ModalScreen[None]):
             body["prompt"] = self._prompt
         if self._interventions:
             body["interventions"] = self._interventions
-        self.slice = await self.client.slice(**body)
+        try:
+            self.slice = await self.client.slice(**body)
+        finally:
+            self._busy = None
+        self._timings = self.slice.get("timings") or {}
+        self._last_n_prompt = int(self.slice.get("n_prompt") or 0)
         T = len(self.slice["tokens"])
         self._layers = self.slice["layers"]
         self.top_ids = _decode(self.slice["top_ids"], (T, len(self._layers), self.slice["top_n"]))
@@ -213,7 +247,8 @@ class LensScreen(ModalScreen[None]):
             return
         if self.slice is None:
             if self._status:
-                self.query_one("#lenscontent", Static).update(self._status)
+                self.query_one("#lenscontent", Static).update(
+                    LR.loading_state(self._status, self._prompt, self._source))
             else:
                 self.query_one("#lenscontent", Static).update(
                     LR.empty_state("No turn from the chat to read yet — the lens "
@@ -228,7 +263,7 @@ class LensScreen(ModalScreen[None]):
         n_gen = int(self.slice.get("n_gen") or 0)
         header = (
             f"{self._source or 'text'}  ·  "
-            f"{'logit-lens' if not self.use_lens else 'lens'} · "
+            f"{'logit-lens' if not self.use_lens else (self._lens_desc or 'lens')} · "
             f"{len(self.slice['tokens'])} tok × {len(self._layers)} layers"
             + (f" ({n_gen} generated)" if n_gen else "")
             + ("  · steering the chat" if self._live_pushed else "")
@@ -276,7 +311,7 @@ class LensScreen(ModalScreen[None]):
 
     async def action_toggle_lens(self) -> None:
         self.use_lens = not self.use_lens
-        await self._run_slice()
+        await self._safe_slice()
 
     async def action_generate(self) -> None:
         """A/B: continue the prompt with the current intervention set vs baseline."""
@@ -310,7 +345,7 @@ class LensScreen(ModalScreen[None]):
             return
         self._interventions.append(spec)
         self.notify(f"added {spec['type']} — re-slicing with it active")
-        await self._run_slice()
+        await self._safe_slice()
 
     async def action_steer(self) -> None:
         tid, piece = self._cell_token()
@@ -412,11 +447,21 @@ class LensScreen(ModalScreen[None]):
         self._repaint()
 
     async def _safe_slice(self) -> None:
+        task = asyncio.ensure_future(self._run_slice())
+        self._inflight = task
         try:
-            await self._run_slice()
+            await task
+        except asyncio.CancelledError:
+            self._status = "cancelled (the service may still finish the request)"
+            self._repaint()
         except Exception as e:  # noqa: BLE001
             self._status = f"lens error: {e}"
             self._repaint()
+        finally:
+            self._inflight = None
 
     def action_close(self) -> None:
+        if self._inflight is not None and not self._inflight.done():
+            self._inflight.cancel()  # first esc stops the request; esc again closes
+            return
         self.dismiss(None)

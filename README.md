@@ -192,12 +192,22 @@ run-state file `up` writes and falls back to whoever holds the ports, so an
 orphan from a `kill -9` is still reapable. It never stops a sidecar `up` merely
 reused, unless `--force`.
 
-In the TUI, `ctrl+j` opens the lens on **the prompt you last sent**, and `n`
-generates a continuation through the lens so you watch the residual stream as
-tokens are produced rather than re-reading finished text. `e` analyzes text you
-type, `V` pushes the current intervention set to the chat so your next real turn
-is steered, and `?` documents every key. With no conversation yet it says so
-rather than analyzing filler.
+In the TUI, `ctrl+j` opens the lens on **the conversation you are viewing**
+(after `/new` it asks for text instead), and `n` generates a continuation
+through the lens so you watch the residual stream as tokens are produced rather
+than re-reading finished text. While a slice computes, the tab shows what text
+it is reading, a running elapsed count, and — once it has one request's timings
+— an up-front estimate; `esc` cancels an in-flight slice (a second `esc`
+closes). `e` analyzes text you type, `V` pushes the current intervention set to
+the chat so your next real turn is steered, and `?` documents every key. The
+header names the readout quality (`identity lens (unfitted)` until you
+`lo lens fit` one). With no conversation yet it says so rather than analyzing
+filler.
+
+A sidecar started without `--n-gpu-layers` runs the model **on CPU** — a
+27B-class model reads out at several seconds per token there, so slices and
+generation take minutes (`up` now warns about this). Offload with
+`lo lens up --n-gpu-layers N` if the GPU has headroom.
 
 It reaches your **existing** server three ways, no rewrite: a llama.cpp
 **control vector** (`lo lens export cvec …` → one relaunch flag), an

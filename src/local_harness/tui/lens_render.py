@@ -190,7 +190,8 @@ _HELP_ROWS = [
     ("V", "push these interventions to the chat — steers your NEXT real turn"),
     ("c", "clear interventions (also clears any pushed to the chat)"),
     ("", None),
-    ("? / esc", "toggle this help / close the lens"),
+    ("? / esc", "toggle this help / close the lens (esc first cancels a slice "
+                "that is still computing)"),
 ]
 
 
@@ -221,6 +222,27 @@ def _wrap(s: str, width: int) -> list[str]:
     if line:
         out.append(line)
     return out
+
+
+def loading_state(status: str, text: str | None, source: str = "") -> RenderableType:
+    """The in-flight view. It must SAY what is being analyzed — a bare
+    'computing slice…' over an invisibly auto-picked prompt reads as the tab
+    running some random text of its own choosing."""
+    t = Text()
+    t.append(f"{status}\n\n", style="bold " + R.C_GOLD)
+    if text:
+        t.append(f"reading {source or 'this text'}:\n", style=R.C_DIM)
+        preview = text.strip()
+        if len(preview) > 400:
+            preview = preview[:400] + " …"
+        for line in preview.splitlines()[:8]:
+            t.append(f"  {line}\n", style=R.C_ANSWER)
+        t.append("\n")
+    t.append("  e", style="bold " + R.C_ANSWER)
+    t.append("  analyze different text instead\n", style=R.C_DIM)
+    t.append("  esc", style="bold " + R.C_ANSWER)
+    t.append("  cancel\n", style=R.C_DIM)
+    return Panel(t, border_style=R.C_GOLD, expand=False)
 
 
 def empty_state(reason: str) -> RenderableType:

@@ -185,9 +185,63 @@ def test_lens_seed_prefers_the_prompt_you_sent(tmp_path):
     app = HarnessApp.__new__(HarnessApp)   # no TUI mount; just the seed logic
     app.event_log = log
     app._run_ids = [run_id]
+    app._blank = False
+    app.active = None
     text, source = app._lens_seed()
     assert text == "explain backprop"
     assert "prompt" in source
 
     app._run_ids = []
     assert app._lens_seed() == (None, "")
+
+
+def test_lens_seed_respects_new_and_the_viewed_run(tmp_path):
+    """After /new the lens must ask, not resurrect an old run; and when viewing
+    an older run it must read THAT run, not the newest in the sidebar."""
+    from local_harness.events.log import EventLog
+    from local_harness.tui.app import HarnessApp
+
+    log = EventLog(str(tmp_path / "e.db"))
+    old = log.create_run("old question")
+    new = log.create_run("newest question")
+
+    app = HarnessApp.__new__(HarnessApp)
+    app.event_log = log
+    app._run_ids = [old, new]
+
+    app._blank = True                       # /new was just pressed
+    app.active = None
+    assert app._lens_seed() == (None, "")
+
+    app._blank = False
+    app.active = old                        # browsing history: the older run
+    text, _ = app._lens_seed()
+    assert text == "old question"
+
+    app.active = None                       # nothing selected → newest wins
+    text, _ = app._lens_seed()
+    assert text == "newest question"
+
+
+def test_loading_state_names_the_text_and_offers_escape():
+    """While a multi-minute slice runs, the tab must say WHAT it is reading and
+    how to bail — a bare status string read as analyzing a random prompt."""
+    out = _render(LR.loading_state("computing slice… · 12s",
+                                   "explain backprop", "your last prompt"))
+    assert "your last prompt" in out
+    assert "explain backprop" in out
+    assert "esc" in out and "cancel" in out
+    assert "different text" in out
+
+
+def test_generation_estimate_comes_from_prior_timings():
+    """`n` used to look like a hang: no estimate, no feedback. The estimate is
+    per-token cost from the last slice, times re-prefill + new tokens."""
+    from local_harness.tui.lens_screen import LensScreen
+
+    ls = LensScreen("http://x")
+    assert ls._estimate_s() is None         # first slice: nothing to base it on
+    ls._timings = {"prompt_ms": 5000.0}     # 10 tokens took 5s → 0.5 s/tok
+    ls._last_n_prompt = 10
+    ls._n_predict = 20
+    assert ls._estimate_s() == pytest.approx(15.0)  # re-prefill 10 + generate 20

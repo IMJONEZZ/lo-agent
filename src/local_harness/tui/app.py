@@ -2897,9 +2897,12 @@ class HarnessApp(App):
         it ran after the turn rather than during it.
         """
         try:
-            if not self._run_ids:
+            if self._blank:
+                return None, ""  # /new: a blank slate must not resurrect old runs
+            # Read the run being VIEWED, not whatever is newest in the sidebar.
+            run_id = self.active or (self._run_ids[-1] if self._run_ids else None)
+            if run_id is None:
                 return None, ""
-            run_id = self._run_ids[-1]
             meta = self.event_log.run(run_id)
             if meta is not None and getattr(meta, "task", None):
                 return meta.task, "your last prompt"
