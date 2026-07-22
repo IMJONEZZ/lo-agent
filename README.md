@@ -180,7 +180,15 @@ lo lens fit --model model.gguf --corpus wikitext:100 -o lens.gguf   # optional; 
 lo config set lens_url http://<model-box>:8092
 lo lens gen "…the currency of Italy is the" --steer ' yen' --alpha 3   # A/B, baseline vs steered
 lo tui                                                # ctrl+j opens the live heatmap tab
+
+# back on the model box, when you're done — frees the model's RAM/VRAM + ports:
+lo lens down
 ```
+
+`lo lens up` runs in the foreground and stops its sidecar on exit. If it was
+killed outright (closed terminal, `kill -9`), `lo lens down` still finds the
+orphan — it reads the run-state file `up` writes, and falls back to whoever
+holds the ports. It never stops a sidecar `up` merely reused, unless `--force`.
 
 It reaches your **existing** server three ways, no rewrite: a llama.cpp
 **control vector** (`lo lens export cvec …` → one relaunch flag), an

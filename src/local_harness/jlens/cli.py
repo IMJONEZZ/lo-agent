@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 
 logger = logging.getLogger("lo.lens")
 
@@ -45,11 +46,12 @@ def cmd_up(args) -> None:
     logger.info("sidecar binary: %s", binp)
 
     # reuse a running sidecar on the port, else spawn one
+    proc = None  # set only if WE spawned it — we never reap someone else's
     props = manager.sidecar_props(args.sidecar_port)
     if props is None:
-        manager.spawn_sidecar(binp, model, port=args.sidecar_port,
-                              ctx_size=args.ctx_size, chunk=args.chunk,
-                              n_gpu_layers=args.n_gpu_layers, threads=args.threads)
+        proc = manager.spawn_sidecar(binp, model, port=args.sidecar_port,
+                                     ctx_size=args.ctx_size, chunk=args.chunk,
+                                     n_gpu_layers=args.n_gpu_layers, threads=args.threads)
         props = manager.sidecar_props(args.sidecar_port)
     else:
         served = props.get("model_path", "")
@@ -73,9 +75,29 @@ def cmd_up(args) -> None:
 
     import uvicorn
     url = f"http://{args.host}:{args.service_port}"
+
+    # Record what we're running so `lo lens down` can reap it from another
+    # shell — including after a SIGKILL, when no atexit hook of ours survives.
+    manager.write_state(service_pid=os.getpid(), service_host=args.host,
+                        service_port=args.service_port,
+                        sidecar_pid=(proc.pid if proc else None),
+                        sidecar_port=args.sidecar_port,
+                        sidecar_owned=proc is not None,
+                        model=model, started_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+
     print(f"\n  ── lo lens service ready: {url} ──")
-    print(f"  point a client at it:  lo config set lens_url {url}\n", flush=True)
-    uvicorn.run(app, host=args.host, port=args.service_port, log_level="warning")
+    print(f"  point a client at it:  lo config set lens_url {url}")
+    print("  take it down:          lo lens down\n", flush=True)
+    try:
+        uvicorn.run(app, host=args.host, port=args.service_port, log_level="warning")
+    finally:
+        # Runs on Ctrl-C and on uvicorn's SIGTERM handling alike. Only the
+        # sidecar we spawned is ours to stop; a reused one keeps running.
+        if proc is not None:
+            logger.info("stopping sidecar (pid %d) ...", proc.pid)
+            if not manager.stop_sidecar(proc):
+                logger.error("sidecar pid %d survived SIGKILL — stop it by hand", proc.pid)
+        manager.clear_state()
 
 
 def _auto_lens(model: str) -> str | None:
@@ -88,6 +110,59 @@ def _auto_lens(model: str) -> str | None:
     return None
 
 
+def cmd_down(args) -> None:
+    """Stop the lens service + sidecar started by `lo lens up` on THIS box.
+
+    Prefers the run-state file written by `up`; falls back to whoever is
+    listening on the ports, so an orphan from a crashed/killed run (or from a
+    build predating the state file) is still reapable.
+    """
+    from local_harness.jlens import manager
+
+    state = manager.read_state()
+    service_port = args.service_port or state.get("service_port") or DEFAULT_SERVICE_PORT
+    sidecar_port = args.sidecar_port or state.get("sidecar_port") or DEFAULT_SIDECAR_PORT
+
+    # Service first: its own cleanup may take the sidecar with it.
+    targets, skipped = [], False
+    svc_pid = state.get("service_pid") or manager.pid_on_port(service_port)
+    if svc_pid and manager.pid_alive(svc_pid):
+        targets.append(("lens service", svc_pid, service_port))
+
+    side_pid = state.get("sidecar_pid") or manager.pid_on_port(sidecar_port)
+    if side_pid and manager.pid_alive(side_pid):
+        # Refuse to reap a sidecar `up` explicitly reused, unless asked.
+        if state and state.get("sidecar_owned") is False and not args.force:
+            print(f"  ! sidecar on :{sidecar_port} (pid {side_pid}) was not started by "
+                  f"`lo lens up` — leaving it alone (--force to stop it anyway)")
+            skipped = True
+        else:
+            targets.append(("sidecar", side_pid, sidecar_port))
+
+    if not targets:
+        if not skipped:
+            print(f"nothing to stop (no lens service on :{service_port}, "
+                  f"no sidecar on :{sidecar_port})")
+        manager.clear_state()
+        return
+
+    failed = []
+    for label, pid, port in targets:
+        print(f"  stopping {label} (pid {pid}, :{port}) ...", end=" ", flush=True)
+        if manager.stop_pid(pid, timeout=args.timeout, label=label):
+            print("stopped")
+        else:
+            print("FAILED")
+            failed.append((label, pid))
+
+    manager.clear_state()
+    if failed:
+        sys.exit("error: could not stop "
+                 + ", ".join(f"{label} (pid {pid})" for label, pid in failed)
+                 + " — you may need `sudo kill -9`, or it belongs to another user.")
+    print("\n  lens is down.")
+
+
 def cmd_doctor(args) -> None:
     """Client-side: explain what to run where; check a configured lens_url."""
     import httpx
@@ -96,7 +171,9 @@ def cmd_doctor(args) -> None:
     print("lo lens — readiness\n")
     print("  The lens needs a sidecar + lens service running ON THE MODEL BOX")
     print("  (activations can't be read over a stock server's API). On that box:")
-    print("     lo lens up --llama-server http://127.0.0.1:8080\n")
+    print("     lo lens up --llama-server http://127.0.0.1:8080")
+    print("  and to stop it again (frees the model's RAM/VRAM and the ports):")
+    print("     lo lens down\n")
     if not lens_url:
         print(f"  {mark(False)} lens_url not configured — set it once the box-side service is up:")
         print("       lo config set lens_url http://<model-box>:8092")
@@ -320,6 +397,6 @@ def run(args) -> None:
         if missing:
             sys.exit(f"error: `lo lens {args.lens_action}` needs "
                      f"{' and '.join(missing)} — {_EXTRA_MSG}")
-    {"up": cmd_up, "doctor": cmd_doctor, "status": cmd_status, "fit": cmd_fit,
-     "inspect": cmd_inspect, "gen": cmd_gen, "export": cmd_export,
+    {"up": cmd_up, "down": cmd_down, "doctor": cmd_doctor, "status": cmd_status,
+     "fit": cmd_fit, "inspect": cmd_inspect, "gen": cmd_gen, "export": cmd_export,
      "shim": cmd_shim}[args.lens_action](args)

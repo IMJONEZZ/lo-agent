@@ -10,9 +10,11 @@ refuses a model/sidecar mismatch.
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -24,6 +26,7 @@ logger = logging.getLogger(__name__)
 JLENS_REPO = "https://github.com/igorbarshteyn/jlens-gguf.git"
 JLENS_PIN = os.environ.get("LO_JLENS_COMMIT", "")  # empty = default branch
 LO_JLENS_HOME = Path(os.environ.get("LO_JLENS_HOME", Path.home() / ".lo" / "jlens"))
+STATE_PATH = LO_JLENS_HOME / "state.json"
 
 
 # ---------------------------------------------------------------- binary --
@@ -116,6 +119,154 @@ def build_sidecar(*, llama_dir: str | None = None, jobs: int | None = None) -> s
     return str(binp)
 
 
+# ------------------------------------------------------- run-state file --
+#
+# `lo lens up` runs in the foreground, so a closed terminal or a SIGKILL used to
+# leave the sidecar orphaned (holding the model's RAM/VRAM and its port) with no
+# way to find it again. We record what we started so `lo lens down` can reap it
+# from any later shell.
+
+
+def write_state(**fields) -> None:
+    """Record the running lens processes so `lo lens down` can find them."""
+    try:
+        LO_JLENS_HOME.mkdir(parents=True, exist_ok=True)
+        STATE_PATH.write_text(json.dumps(fields, indent=2))
+    except OSError as e:  # a missing state file must never break `up`
+        logger.debug("could not write %s: %s", STATE_PATH, e)
+
+
+def read_state() -> dict:
+    try:
+        return json.loads(STATE_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def clear_state() -> None:
+    try:
+        STATE_PATH.unlink()
+    except OSError:
+        pass
+
+
+# ------------------------------------------------------- process control --
+
+
+def _is_zombie(pid: int) -> bool:
+    """A reaped-but-not-waited child still answers signal 0; it is not running."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        return stat.rsplit(")", 1)[1].split()[0] == "Z"
+    except (OSError, IndexError):
+        pass
+    if shutil.which("ps"):  # macOS / no procfs
+        try:
+            out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                                 capture_output=True, text=True, timeout=2).stdout.strip()
+            return out.startswith("Z")
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return False
+
+
+def pid_alive(pid: int) -> bool:
+    """Is this PID running? (signal 0 probes without delivering anything.)
+
+    Zombies count as dead: a child of ours that has exited but not been waited
+    on still accepts signal 0, and treating that as alive would make a stop
+    look like it failed.
+    """
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # alive, just not ours
+        return True
+    return not _is_zombie(pid)
+
+
+def pid_on_port(port: int) -> int | None:
+    """PID listening on a localhost TCP port, via ss(8) then lsof(8).
+
+    Lets `down` reap an orphan left by a build that predates the state file.
+    """
+    if shutil.which("ss"):
+        try:
+            out = subprocess.run(["ss", "-ltnpH"], capture_output=True, text=True, timeout=5).stdout
+            for line in out.splitlines():
+                if f":{port} " in line and "pid=" in line:
+                    return int(line.split("pid=")[1].split(",")[0])
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    if shutil.which("lsof"):
+        try:
+            out = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            if out.strip():
+                return int(out.split()[0])
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    return None
+
+
+def stop_pid(pid: int, *, timeout: float = 10.0, label: str = "process") -> bool:
+    """SIGTERM, wait up to `timeout`, then SIGKILL. True if it is gone after.
+
+    The old code called ``proc.terminate()`` from an atexit hook and exited
+    immediately, so a sidecar slow to unload a multi-GB model could outlive us.
+    """
+    if not pid_alive(pid):
+        return True
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        logger.warning("no permission to stop %s (pid %d)", label, pid)
+        return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not pid_alive(pid):
+            return True
+        time.sleep(0.2)
+
+    logger.warning("%s (pid %d) ignored SIGTERM after %.0fs — sending SIGKILL", label, pid, timeout)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if not pid_alive(pid):
+            return True
+        time.sleep(0.2)
+    return not pid_alive(pid)
+
+
+def stop_sidecar(proc: subprocess.Popen, *, timeout: float = 10.0) -> bool:
+    """Graceful stop for a sidecar we spawned, reaping the child properly."""
+    if proc.poll() is not None:
+        return True
+    proc.terminate()
+    try:
+        proc.wait(timeout=timeout)
+        return True
+    except subprocess.TimeoutExpired:
+        logger.warning("sidecar ignored SIGTERM after %.0fs — sending SIGKILL", timeout)
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+
+
 # ---------------------------------------------------------------- spawn --
 
 
@@ -130,7 +281,8 @@ def spawn_sidecar(bin_path: str, model: str, *, port: int, ctx_size: int = 4096,
         cmd += ["-t", str(threads)]
     logger.info("starting sidecar: %s", " ".join(cmd))
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    atexit.register(proc.terminate)
+    # wait for the child to actually die, don't just fire SIGTERM and exit
+    atexit.register(stop_sidecar, proc)
     url = f"http://127.0.0.1:{port}"
     deadline = time.time() + wait_s
     while time.time() < deadline:
@@ -143,7 +295,7 @@ def spawn_sidecar(bin_path: str, model: str, *, port: int, ctx_size: int = 4096,
         except Exception:
             pass
         time.sleep(1.0)
-    proc.terminate()
+    stop_sidecar(proc)
     raise RuntimeError(f"sidecar did not become healthy within {wait_s:.0f}s")
 
 
