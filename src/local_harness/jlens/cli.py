@@ -90,6 +90,12 @@ def cmd_up(args) -> None:
     proc = None  # set only if WE spawned it — we never reap someone else's
     props = manager.sidecar_props(args.sidecar_port)
     if props is None:
+        if not args.n_gpu_layers:
+            logger.warning(
+                "sidecar will run CPU-only (no --n-gpu-layers): a 27B-class model "
+                "reads out at several SECONDS per token, so slices and generation "
+                "in the lens tab take minutes. If the GPU has headroom, restart "
+                "with: lo lens up --n-gpu-layers N")
         proc = manager.spawn_sidecar(binp, model, port=args.sidecar_port,
                                      ctx_size=args.ctx_size, chunk=args.chunk,
                                      n_gpu_layers=args.n_gpu_layers, threads=args.threads)
