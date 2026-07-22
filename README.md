@@ -193,9 +193,13 @@ orphan from a `kill -9` is still reapable. It never stops a sidecar `up` merely
 reused, unless `--force`.
 
 In the TUI, `ctrl+j` opens the lens on **the conversation you are viewing**
-(after `/new` it asks for text instead), and `n` generates a continuation
-through the lens so you watch the residual stream as tokens are produced rather
-than re-reading finished text. While a slice computes, the tab shows what text
+(after `/new` it asks for text instead): your prompt is shown above the grid,
+and the answer the model **actually produced** is teacher-forced through the
+lens after it — so solid cells mean "this layer already called the real output
+token", a dim divider marks the prompt/answer boundary, and a `≈` on a row
+means sampling picked that token over the model's own final-layer top-1. `n`
+generates a continuation through the lens so you watch the residual stream as
+tokens are produced rather than re-reading finished text. While a slice computes, the tab shows what text
 it is reading, a running elapsed count, and — once it has one request's timings
 — an up-front estimate; `esc` cancels an in-flight slice (a second `esc`
 closes). `e` analyzes text you type, `V` pushes the current intervention set to

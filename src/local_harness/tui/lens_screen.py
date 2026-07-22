@@ -103,11 +103,15 @@ class LensScreen(ModalScreen[None]):
     ]
 
     def __init__(self, lens_url: str, *, prompt: str | None = None,
+                 completion: str | None = None,
                  tokens: list[int] | None = None, can_steer: bool = False,
                  source: str = "", seed_provider=None):
         super().__init__()
         self.client = LensClient(lens_url)
         self._prompt = prompt
+        # The answer the chat model ACTUALLY produced: teacher-forced through
+        # the lens so the grid covers the real output tokens, not a re-roll.
+        self._completion = completion
         self._tokens = tokens
         self.can_steer = can_steer
         # Where the analyzed text came from, shown in the header. The tab used to
@@ -119,7 +123,7 @@ class LensScreen(ModalScreen[None]):
         self._show_help = False
         self._live_pushed = False
         self._timings: dict = {}      # last slice's server-side ms — feeds estimates
-        self._last_n_prompt = 0
+        self._last_prefill = 0        # tokens prefilled last time (prompt + answer)
         self._busy: str | None = None  # base status while a request is in flight
         self._busy_t0 = 0.0
         self._inflight: asyncio.Task | None = None
@@ -180,10 +184,10 @@ class LensScreen(ModalScreen[None]):
         """Predict the next slice from the last one's server timings — every
         slice re-prefills the prompt, and decode runs at roughly prefill speed."""
         prompt_ms = (self._timings or {}).get("prompt_ms")
-        if not prompt_ms or not self._last_n_prompt:
+        if not prompt_ms or not self._last_prefill:
             return None
-        per_tok = prompt_ms / self._last_n_prompt
-        return per_tok * (self._last_n_prompt + self._n_predict) / 1000
+        per_tok = prompt_ms / self._last_prefill
+        return per_tok * (self._last_prefill + self._n_predict) / 1000
 
     async def _ensure_vocab(self) -> None:
         """The mount-time fetch can fail (service busy or still starting) and a
@@ -211,6 +215,8 @@ class LensScreen(ModalScreen[None]):
             body["tokens"] = self._tokens
         else:
             body["prompt"] = self._prompt
+            if self._completion:
+                body["completion"] = self._completion
         if self._interventions:
             body["interventions"] = self._interventions
         try:
@@ -218,8 +224,8 @@ class LensScreen(ModalScreen[None]):
         finally:
             self._busy = None
         self._timings = self.slice.get("timings") or {}
-        self._last_n_prompt = int(self.slice.get("n_prompt") or 0)
         T = len(self.slice["tokens"])
+        self._last_prefill = T - int(self.slice.get("n_gen") or 0)
         self._layers = self.slice["layers"]
         self.top_ids = _decode(self.slice["top_ids"], (T, len(self._layers), self.slice["top_n"]))
         self.cursor = (min(self.cursor[0], T - 1), min(self.cursor[1], len(self._layers) - 1))
@@ -266,26 +272,37 @@ class LensScreen(ModalScreen[None]):
                                    "will not invent one for you."))
             return
         pieces = self.slice["pieces"]
+        n_gen = int(self.slice.get("n_gen") or 0)
+        n_forced = int(self.slice.get("n_forced") or 0)
+        n_prompt = int(self.slice.get("n_prompt") or 0)
+        bounds = [n_prompt]
+        if n_forced and n_gen:  # prompt | actual answer | lens-generated
+            bounds.append(n_prompt + n_forced)
+        tokens = self.slice["tokens"]
+        # what ACTUALLY followed each position — the transcript itself
+        actual = np.asarray(list(tokens[1:]) + [-1], dtype=np.int64)
         grid = LR.lens_grid(
             pieces=pieces, layers=self._layers, top_ids=self.top_ids,
             final_ids=self._final_ids(), cursor=self.cursor, vocab=self.vocab,
-            boundary=self.slice.get("n_prompt"),
+            boundary=bounds, actual_ids=actual,
         )
-        n_gen = int(self.slice.get("n_gen") or 0)
         header = (
             f"{self._source or 'text'}  ·  "
             f"{'logit-lens' if not self.use_lens else (self._lens_desc or 'lens')} · "
-            f"{len(self.slice['tokens'])} tok × {len(self._layers)} layers"
+            f"{len(tokens)} tok × {len(self._layers)} layers"
+            + (f" · answer: {n_forced} tok" if n_forced else "")
             + (f" ({n_gen} generated)" if n_gen else "")
             + ("  · steering the chat" if self._live_pushed else "")
             + (f"  [{self._status}]" if self._status else ""))
+        turn = LR.turn_line(self._prompt, n_forced=n_forced, n_gen=n_gen)
         readout = LR.cell_readout_panel(self._readout, self.vocab) if self._readout else None
         pins = LR.pins_panel(self._pins_cache) if getattr(self, "_pins_cache", None) else None
         dec = self._decompose
         iv = LR.interventions_panel(self._interventions, "steer" if self.can_steer else "inspect",
                                     self.vocab)
         content = LR.lens_screen(header=header, grid=grid, readout=readout,
-                                 pins=pins, decompose=dec, interventions=iv)
+                                 pins=pins, decompose=dec, interventions=iv,
+                                 turn=turn)
         self.query_one("#lenscontent", Static).update(content)
 
     # --- actions ---
@@ -410,7 +427,8 @@ class LensScreen(ModalScreen[None]):
         self.query_one("#lensbody").focus()
         if not text:
             return
-        self._prompt, self._tokens, self._source = text, None, "your text"
+        self._prompt, self._completion, self._tokens = text, None, None
+        self._source = "your text"
         self._show_help = False
         await self._safe_slice()
 
@@ -419,11 +437,12 @@ class LensScreen(ModalScreen[None]):
         if self._seed_provider is None:
             self.notify("no chat to read from")
             return
-        text, source = self._seed_provider()
+        text, answer, source = self._seed_provider()
         if not text:
             self.notify("no completed turn in the chat yet")
             return
-        self._prompt, self._tokens, self._source = text, None, source
+        self._prompt, self._completion, self._tokens = text, answer, None
+        self._source = source
         self._show_help = False
         await self._safe_slice()
 

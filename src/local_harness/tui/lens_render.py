@@ -46,14 +46,20 @@ def lens_grid(
     cursor: tuple[int, int] = (0, 0),   # (pos_index, layer_index)
     vocab=None,
     max_rows: int = 40,
-    boundary: int | None = None,   # index where prompt ends / generation begins
+    boundary=None,    # int or list[int]: indices where prompt|answer|gen change
+    actual_ids=None,  # np [T] int: the token that ACTUALLY followed each pos
 ) -> RenderableType:
     """The position×layer heatmap: each cell = lens top-1 token colored by rank.
 
-    Cells whose top-1 differs from the model's final output are dim; the
-    cursor cell is highlighted; ``changed`` positions get an orange ⚠.
+    With ``actual_ids`` (the real transcript, teacher-forced), solid means the
+    cell's top-1 matches what the model actually said next — and rows where the
+    sampled token differs from the model's own final-layer top-1 get a ≈ mark
+    (sampling picked a runner-up). Without it, solid = matches final-layer
+    top-1. The cursor cell is highlighted; ``changed`` positions get ⚠.
     """
     T = len(pieces)
+    bounds = set(boundary) if isinstance(boundary, (list, tuple, set)) else (
+        {boundary} if boundary is not None else set())
     lo = max(0, min(cursor[0] - max_rows // 2, T - max_rows)) if T > max_rows else 0
     hi = min(T, lo + max_rows)
 
@@ -76,20 +82,27 @@ def lens_grid(
         # top-1: a prediction, not "the actual token I was looking for").
         tok = pieces[pos].replace("\n", "\\n").replace("\t", "\\t")
         label = Text()
-        if boundary is not None and pos == boundary:
+        if pos in bounds:
             label.append("┈ ", style=R.C_DIM)
         mark = "⚠" if pos in changed else ("›" if pos == cursor[0] else " ")
         label.append(f"{mark}{pos:>3} ", style=(R.C_TOOL if pos in changed else R.C_DIM))
+        # ≈: the transcript token here is NOT the model's final-layer top-1 —
+        # sampling picked a runner-up, so the J-space "wanted" something else.
+        sampled_off = (actual_ids is not None and pos < T - 1
+                       and int(actual_ids[pos]) != int(final_ids[pos]))
+        label.append("≈" if sampled_off else " ",
+                     style=R.C_SAKURA if sampled_off else R.C_DIM)
         label.append((tok[:10]).ljust(10),
                      style=("bold " + R.C_OK if pos == cursor[0] else R.C_DIM))
         cells = [label]
+        # ground truth for "did this cell call it": the actual next token when
+        # we have the transcript, else the model's own final-layer top-1
+        truth = (int(actual_ids[pos]) if actual_ids is not None and pos < T - 1
+                 else int(final_ids[pos]))
         for li, _ in enumerate(layers):
             tid = int(top_ids[pos, li, 0])
             piece = _piece(vocab, tid)[:8] if vocab is not None else str(tid)
-            # rank of this cell's top-1 within the FINAL distribution isn't
-            # available here; we shade by column depth as a cheap proxy unless
-            # a rank array is supplied. Use solidity by whether it matches final.
-            same = vocab is not None and tid == int(final_ids[pos])
+            same = vocab is not None and tid == truth
             ch, base = _shade(0 if same else 30)
             cur = pos == cursor[0] and li == cursor[1]
             style = ("bold " + R.C_GOLD) if cur else (base + (R.C_OK if same else R.C_DIM))
@@ -97,7 +110,9 @@ def lens_grid(
         table.add_row(*cells)
 
     title = Text("J-Lens · ", style="bold " + R.C_GOLD)
-    title.append("position × layer — cell = top-1 token; solid = matches output",
+    title.append("position × layer — cell = top-1 token; solid = "
+                 + ("matches the actual output; ≈ sampled ≠ greedy"
+                    if actual_ids is not None else "matches output"),
                  style=R.C_DIM)
     return Panel(table, title=title, border_style=R.B_JADE if hasattr(R, "B_JADE") else R.C_OK)
 
@@ -176,7 +191,10 @@ _HELP_ROWS = [
     ("", "Each column is a layer, each row a token of the turn. A cell shows what "
          "the model's residual stream 'means' at that layer — the tokens it would "
          "decode to if you read it out there. Watch a concept sharpen left→right."),
-    ("", "A dim divider separates your prompt from what the model generated."),
+    ("", "Dim dividers separate your prompt, the model's actual answer (teacher-"
+         "forced back through the lens), and any lens-generated continuation. "
+         "Solid cells match what the model actually said next; a ≈ on a row means "
+         "sampling picked that token over the model's own final-layer top-1."),
     ("moving around", None),
     ("↑ ↓ ← →", "move the cursor; the readout below follows the selected cell"),
     ("d", "decompose the selected cell into contributing directions"),
@@ -228,6 +246,22 @@ def _wrap(s: str, width: int) -> list[str]:
     return out
 
 
+def turn_line(prompt: str | None, *, n_forced: int = 0, n_gen: int = 0,
+              width: int = 150) -> Text:
+    """One always-visible line naming the analyzed text: the prompt (truncated;
+    `e` shows/edits the full text) and what follows it in the grid."""
+    t = Text()
+    if prompt:
+        one = " ".join(prompt.split())
+        t.append("❯ ", style="bold " + R.C_GOLD)
+        t.append(one[:width] + (" …" if len(one) > width else ""), style=R.C_ANSWER)
+    if n_forced:
+        t.append(f"   + the model's actual answer ({n_forced} tok)", style=R.C_SAKURA)
+    if n_gen:
+        t.append(f"   + lens-generated ({n_gen} tok)", style=R.C_OK)
+    return t
+
+
 def loading_state(status: str, text: str | None, source: str = "") -> RenderableType:
     """The in-flight view. It must SAY what is being analyzed — a bare
     'computing slice…' over an invisibly auto-picked prompt reads as the tab
@@ -264,9 +298,12 @@ def empty_state(reason: str) -> RenderableType:
 
 
 def lens_screen(*, header: str, grid, readout=None, pins=None, decompose=None,
-                interventions=None, hint: str = "") -> RenderableType:
+                interventions=None, hint: str = "", turn=None) -> RenderableType:
     """Compose the full lens tab."""
-    blocks: list[RenderableType] = [Text(header, style="bold " + R.C_GOLD), grid]
+    blocks: list[RenderableType] = [Text(header, style="bold " + R.C_GOLD)]
+    if turn is not None:
+        blocks.append(turn)
+    blocks.append(grid)
     if readout is not None:
         blocks.append(readout)
     if pins is not None:

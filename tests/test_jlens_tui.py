@@ -187,12 +187,34 @@ def test_lens_seed_prefers_the_prompt_you_sent(tmp_path):
     app._run_ids = [run_id]
     app._blank = False
     app.active = None
-    text, source = app._lens_seed()
+    text, answer, source = app._lens_seed()
     assert text == "explain backprop"
+    assert answer is None                  # nothing generated yet
     assert "prompt" in source
 
     app._run_ids = []
-    assert app._lens_seed() == (None, "")
+    assert app._lens_seed() == (None, None, "")
+
+
+def test_lens_seed_carries_the_actual_answer(tmp_path):
+    """A finished turn seeds prompt AND the answer the model really produced,
+    so the grid can be compared against the true output tokens."""
+    from local_harness.events.log import RUN_COMPLETED, EventLog
+    from local_harness.tui.app import HarnessApp
+
+    log = EventLog(str(tmp_path / "e.db"))
+    run_id = log.create_run("what is the capital of France?")
+    log.append(run_id, RUN_COMPLETED, {"answer": "The capital is Paris."})
+
+    app = HarnessApp.__new__(HarnessApp)
+    app.event_log = log
+    app._run_ids = [run_id]
+    app._blank = False
+    app.active = None
+    text, answer, source = app._lens_seed()
+    assert text == "what is the capital of France?"
+    assert answer == "The capital is Paris."
+    assert "turn" in source
 
 
 def test_lens_seed_respects_new_and_the_viewed_run(tmp_path):
@@ -211,15 +233,15 @@ def test_lens_seed_respects_new_and_the_viewed_run(tmp_path):
 
     app._blank = True                       # /new was just pressed
     app.active = None
-    assert app._lens_seed() == (None, "")
+    assert app._lens_seed() == (None, None, "")
 
     app._blank = False
     app.active = old                        # browsing history: the older run
-    text, _ = app._lens_seed()
+    text, _, _ = app._lens_seed()
     assert text == "old question"
 
     app.active = None                       # nothing selected → newest wins
-    text, _ = app._lens_seed()
+    text, _, _ = app._lens_seed()
     assert text == "newest question"
 
 
@@ -280,6 +302,51 @@ def test_generation_estimate_comes_from_prior_timings():
     ls = LensScreen("http://x")
     assert ls._estimate_s() is None         # first slice: nothing to base it on
     ls._timings = {"prompt_ms": 5000.0}     # 10 tokens took 5s → 0.5 s/tok
-    ls._last_n_prompt = 10
+    ls._last_prefill = 10
     ls._n_predict = 20
     assert ls._estimate_s() == pytest.approx(15.0)  # re-prefill 10 + generate 20
+
+
+def test_slice_teacher_forces_the_actual_answer(monkeypatch):
+    """`completion` rides along after the prompt: the grid then covers the real
+    output tokens, with n_prompt still marking the prompt/answer boundary."""
+    with MockSidecar() as sc:
+        svc = _mock_service(monkeypatch, sc)
+        out = svc.api_slice({"prompt": "alpha beta",
+                             "completion": "gamma delta epsilon",
+                             "stride": 2, "top_n": 2})
+    assert out["n_prompt"] == 3            # bos + 2 prompt words
+    assert out["n_forced"] == 3            # the answer's tokens, no bos
+    assert len(out["tokens"]) == 6
+    # without a completion nothing changes
+    with MockSidecar() as sc:
+        svc = _mock_service(monkeypatch, sc)
+        out = svc.api_slice({"prompt": "alpha beta", "stride": 2, "top_n": 2})
+    assert out["n_forced"] == 0 and out["n_prompt"] == 3
+
+
+def test_grid_compares_against_the_actual_output():
+    """With the transcript supplied, solid = the cell called the REAL next
+    token, and ≈ marks rows where sampling beat the model's own top-1."""
+    T, L, K = 3, 2, 1
+    top_ids = np.zeros((T, L, K), dtype=np.int32)
+    top_ids[0, :, 0] = 7                    # every layer at pos 0 says 7
+    top_ids[1, :, 0] = 9                    # final layer at pos 1 says 9...
+    vocab = [f"w{i}" for i in range(20)]
+    actual = np.array([7, 8, -1])           # ...but the model actually said 8
+    out = _render(LR.lens_grid(
+        pieces=["a", "b", "c"], layers=[0, 1], top_ids=top_ids,
+        final_ids=top_ids[:, -1, 0], cursor=(0, 0), vocab=vocab,
+        actual_ids=actual))
+    assert "actual output" in out           # legend switches to transcript mode
+    assert "≈" in out                       # pos 1: sampled 8 ≠ greedy 9
+
+
+def test_turn_line_names_prompt_answer_and_generation():
+    out = _render(LR.turn_line("what is the capital of France?",
+                               n_forced=5, n_gen=24))
+    assert "capital of France" in out
+    assert "actual answer (5 tok)" in out
+    assert "lens-generated (24 tok)" in out
+    long = _render(LR.turn_line("x" * 400))
+    assert "…" in long                      # truncated, not a wall of text

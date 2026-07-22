@@ -258,6 +258,16 @@ class LensService:
     def api_slice(self, body):
         t0 = time.time()
         tokens = self.resolve_tokens(body)
+        # Teacher-force a known completion (e.g. the answer the chat model
+        # actually produced) after the prompt: the readouts then cover the real
+        # output tokens, and n_prompt still marks the prompt/answer boundary.
+        n_forced = 0
+        if body.get("completion"):
+            comp = self.client.tokenize(body["completion"],
+                                        add_special=False, parse_special=True)
+            comp = comp[: max(0, self.max_tokens - len(tokens))]
+            n_forced = len(comp)
+            tokens = tokens + comp
         use_lens = bool(body.get("use_lens", True))
         top_n = int(body.get("top_n", self.top_n))
         stride = max(1, int(body.get("stride", 1)))
@@ -272,7 +282,8 @@ class LensService:
         t_fwd = time.time()
         self._ctx_counter += 1
         ctx_id = f"c{self._ctx_counter}"
-        ctx = Context(ctx_id, fr.tokens, fr.n_prompt, fr.n_gen, fr.activations, None, use_lens, ui_specs)
+        n_prompt = fr.n_prompt - n_forced  # the forced answer is not prompt
+        ctx = Context(ctx_id, fr.tokens, n_prompt, fr.n_gen, fr.activations, None, use_lens, ui_specs)
         grid = compute_grid(self.readout, fr.activations, layers, top_n=top_n, use_lens=use_lens,
                             logits_fn=lambda layer: self.lens_logits_for(ctx, layer))
         ctx.grid = grid
@@ -282,7 +293,8 @@ class LensService:
             self.logits_cache.drop_ctx(old_id)
         return {
             "ctx_id": ctx_id, "tokens": ctx.tokens, "pieces": self.pieces(ctx.tokens),
-            "n_prompt": ctx.n_prompt, "n_gen": ctx.n_gen, "generated_text": fr.generated_text,
+            "n_prompt": ctx.n_prompt, "n_gen": ctx.n_gen, "n_forced": n_forced,
+            "generated_text": fr.generated_text,
             "layers": layers, "top_n": top_n, "use_lens": use_lens,
             "top_ids": _b64(grid.top_ids.astype("<i4")),
             "norms": {str(l): v for l, v in grid.norms.items()},

@@ -2888,37 +2888,43 @@ class HarnessApp(App):
                 return None
         return None
 
-    def _lens_seed(self) -> tuple[str | None, str]:
-        """(text, where-it-came-from) to seed the lens with.
+    def _lens_seed(self) -> tuple[str | None, str | None, str]:
+        """(prompt, answer, where-it-came-from) to seed the lens with.
 
-        Prefer the prompt YOU sent: the lens can then generate from it and show
-        the continuation being produced. Seeding with the model's answer instead
-        only ever re-reads finished text, which is why the tab used to feel like
-        it ran after the turn rather than during it.
+        The prompt YOU sent seeds the slice; the answer the model ACTUALLY
+        produced is teacher-forced after it, so the grid covers the real output
+        tokens and the readouts can be compared with what really came out —
+        instead of the lens re-rolling its own continuation.
         """
         try:
             if self._blank:
-                return None, ""  # /new: a blank slate must not resurrect old runs
+                return None, None, ""  # /new: a blank slate stays blank
             # Read the run being VIEWED, not whatever is newest in the sidebar.
             run_id = self.active or (self._run_ids[-1] if self._run_ids else None)
             if run_id is None:
-                return None, ""
+                return None, None, ""
             meta = self.event_log.run(run_id)
-            if meta is not None and getattr(meta, "task", None):
-                return meta.task, "your last prompt"
+            task = getattr(meta, "task", None) if meta is not None else None
 
             from ..events.log import MODEL_CALL, RUN_COMPLETED
+            answer = None
             for e in reversed(self.event_log.events(run_id)):
                 if e.type == RUN_COMPLETED and e.payload.get("answer"):
-                    return e.payload["answer"], "the last answer"
+                    answer = e.payload["answer"]
+                    break
                 if e.type == MODEL_CALL:
                     msg = ((e.payload.get("response") or {}).get("choices")
                            or [{}])[0].get("message") or {}
                     if msg.get("content"):
-                        return msg["content"], "the last answer"
+                        answer = msg["content"]
+                        break
+            if task:
+                return task, answer, ("your last turn" if answer else "your last prompt")
+            if answer:
+                return answer, None, "the last answer"
         except Exception:
             pass
-        return None, ""
+        return None, None, ""
 
     def action_jacobian(self) -> None:
         """Open the Jacobian-lens tab (Rung 6: read/steer the residual stream)."""
@@ -2942,9 +2948,9 @@ class HarnessApp(App):
                 severity="warning", timeout=10)
             return
         can_steer = bool(self.caps and getattr(self.caps, "interventions", False))
-        text, source = self._lens_seed()
-        self.push_screen(LensScreen(url, prompt=text, source=source, can_steer=can_steer,
-                                    seed_provider=self._lens_seed))
+        text, answer, source = self._lens_seed()
+        self.push_screen(LensScreen(url, prompt=text, completion=answer, source=source,
+                                    can_steer=can_steer, seed_provider=self._lens_seed))
 
     def action_usage(self) -> None:
         """Open the usage & advantages overlay (cost / determinism / confidence)."""
