@@ -234,6 +234,44 @@ def test_loading_state_names_the_text_and_offers_escape():
     assert "different text" in out
 
 
+def test_grid_rows_show_the_turns_own_tokens_even_without_a_vocab():
+    """A failed client-side vocab fetch used to render every row label as a
+    bare token number — the user's own text became unreadable."""
+    T, L, K = 3, 2, 1
+    top_ids = np.full((T, L, K), 4242, dtype=np.int32)
+    out = _render(LR.lens_grid(
+        pieces=["Hello", " there", " friend"], layers=[0, 5],
+        top_ids=top_ids, final_ids=top_ids[:, -1, 0], cursor=(0, 0), vocab=[]))
+    assert "Hello" in out and "there" in out and "friend" in out
+    # cells still degrade to [id] with no vocab, but the rows stay readable
+    assert "[4242]" in out
+
+
+@pytest.mark.asyncio
+async def test_missing_vocab_is_refetched_before_a_slice():
+    """on_mount's vocab fetch can fail (service busy); the next slice must
+    retry instead of rendering token numbers forever."""
+    from local_harness.tui.lens_screen import LensScreen
+
+    ls = LensScreen("http://x")
+
+    class FakeClient:
+        async def vocab(self):
+            return ["a", "b"]
+
+    ls.client = FakeClient()
+    await ls._ensure_vocab()
+    assert ls.vocab == ["a", "b"]
+
+    class ExplodingClient:
+        async def vocab(self):
+            raise RuntimeError("still busy")
+
+    ls.client = ExplodingClient()
+    await ls._ensure_vocab()            # keeps the vocab it has, no crash
+    assert ls.vocab == ["a", "b"]
+
+
 def test_generation_estimate_comes_from_prior_timings():
     """`n` used to look like a hang: no estimate, no feedback. The estimate is
     per-token cost from the last slice, times re-prefill + new tokens."""

@@ -185,7 +185,18 @@ class LensScreen(ModalScreen[None]):
         per_tok = prompt_ms / self._last_n_prompt
         return per_tok * (self._last_n_prompt + self._n_predict) / 1000
 
+    async def _ensure_vocab(self) -> None:
+        """The mount-time fetch can fail (service busy or still starting) and a
+        later slice then rendered every cell as a bare token NUMBER. Refetch
+        whenever the vocab is missing instead of failing forever."""
+        if not self.vocab:
+            try:
+                self.vocab = await self.client.vocab()
+            except Exception:  # noqa: BLE001 — the grid degrades to [id] cells
+                pass
+
     async def _run_slice(self):
+        await self._ensure_vocab()
         base = ("generating…" if self._n_predict else "computing slice…")
         est = self._estimate_s()
         if est:

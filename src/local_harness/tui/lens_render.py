@@ -70,7 +70,11 @@ def lens_grid(
 
     changed = changed or set()
     for pos in range(lo, hi):
-        tok = _piece(vocab, top_ids[pos, -1, 0]) if vocab is not None else ""
+        # The row label is the turn's OWN token, straight from the service's
+        # pieces — never a vocab lookup, which renders bare ids when the
+        # client-side vocab fetch failed (and used to show the final-layer
+        # top-1: a prediction, not "the actual token I was looking for").
+        tok = pieces[pos].replace("\n", "\\n").replace("\t", "\\t")
         label = Text()
         if boundary is not None and pos == boundary:
             label.append("┈ ", style=R.C_DIM)
