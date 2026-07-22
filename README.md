@@ -185,10 +185,19 @@ lo tui                                                # ctrl+j opens the live he
 lo lens down
 ```
 
-`lo lens up` runs in the foreground and stops its sidecar on exit. If it was
-killed outright (closed terminal, `kill -9`), `lo lens down` still finds the
-orphan — it reads the run-state file `up` writes, and falls back to whoever
-holds the ports. It never stops a sidecar `up` merely reused, unless `--force`.
+`lo lens up` runs in the foreground and stops its sidecar on exit; `-d`/`--detach`
+runs it in its own session instead, so it survives the terminal (log:
+`~/.lo/jlens/lens.log`). Either way `lo lens down` stops it — it reads the
+run-state file `up` writes and falls back to whoever holds the ports, so an
+orphan from a `kill -9` is still reapable. It never stops a sidecar `up` merely
+reused, unless `--force`.
+
+In the TUI, `ctrl+j` opens the lens on **the prompt you last sent**, and `n`
+generates a continuation through the lens so you watch the residual stream as
+tokens are produced rather than re-reading finished text. `e` analyzes text you
+type, `V` pushes the current intervention set to the chat so your next real turn
+is steered, and `?` documents every key. With no conversation yet it says so
+rather than analyzing filler.
 
 It reaches your **existing** server three ways, no rewrite: a llama.cpp
 **control vector** (`lo lens export cvec …` → one relaunch flag), an

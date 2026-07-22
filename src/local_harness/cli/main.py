@@ -1474,6 +1474,10 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--threads", type=int, default=0)
     up.add_argument("--jobs", type=int, default=None)
     up.add_argument("--no-build", action="store_true", help="fail if no binary instead of building")
+    up.add_argument("--detach", "-d", action="store_true",
+                    help="run in the background, surviving this terminal (stop with `lo lens down`)")
+    up.add_argument("--detach-wait", type=float, default=900.0,
+                    help="seconds to wait for a detached service to report healthy")
     down = lsub.add_parser("down", help="stop the sidecar + lens service started by `up` ON THIS box")
     down.add_argument("--service-port", type=int, default=None, help="override the recorded service port")
     down.add_argument("--sidecar-port", type=int, default=None, help="override the recorded sidecar port")

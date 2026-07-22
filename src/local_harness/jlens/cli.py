@@ -25,8 +25,49 @@ def _warn_remote_load(target: str | None) -> None:
             "Confirm it is free before proceeding (shared-fleet rule).", target)
 
 
+def _detach(args) -> None:
+    """Re-exec this command in its own session, detached from the terminal.
+
+    `up` is otherwise foreground-only, so closing the terminal SIGHUPs the
+    service and the sidecar — and a client mid-request just hangs. Detached, it
+    survives the shell and `lo lens down` stops it.
+    """
+    import subprocess
+
+    from local_harness.jlens import manager
+
+    manager.LO_JLENS_HOME.mkdir(parents=True, exist_ok=True)
+    log_path = manager.LO_JLENS_HOME / "lens.log"
+    argv = [a for a in sys.argv if a not in ("--detach", "-d")]
+    with open(log_path, "ab", buffering=0) as logf:
+        proc = subprocess.Popen(argv, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
+                                start_new_session=True)
+
+    url = f"http://{args.host}:{args.service_port}"
+    print(f"  starting lens in the background (pid {proc.pid}) — log: {log_path}")
+    print("  first run builds the sidecar and loads the model; this can take minutes.")
+    import httpx
+    deadline = time.time() + args.detach_wait
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            sys.exit(f"error: lens exited ({proc.returncode}) while starting — see {log_path}")
+        try:
+            if httpx.get(url + "/health", timeout=2).json().get("status") == "ok":
+                print(f"\n  ── lo lens service ready: {url} ──")
+                print(f"  point a client at it:  lo config set lens_url {url}")
+                print("  take it down:          lo lens down\n")
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(1.0)
+    print(f"  still starting after {args.detach_wait:.0f}s — it keeps going in the "
+          f"background.\n  watch it:  tail -f {log_path}\n  check it:  lo lens doctor")
+
+
 def cmd_up(args) -> None:
     """Build (if needed) + start the sidecar and lens service on THIS box."""
+    if getattr(args, "detach", False):
+        return _detach(args)
     from local_harness.jlens import manager
     from local_harness.jlens.service import LensService, create_app
 

@@ -180,3 +180,57 @@ def test_down_port_overrides_beat_recorded_state(capsys, monkeypatch):
 
     assert not manager.pid_alive(orphan.pid)
     orphan.wait()
+
+
+# ------------------------------------------------------------ detached `up` --
+
+
+def _detach_args(**kw):
+    return argparse.Namespace(**{"detach": True, "host": "127.0.0.1",
+                                 "service_port": 18092, "detach_wait": 5.0, **kw})
+
+
+def test_detach_spawns_a_new_session_and_reports_ready(monkeypatch, capsys, tmp_path):
+    """Detached `up` must outlive the shell — hence start_new_session."""
+    seen = {}
+
+    class FakeProc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    def fake_popen(argv, **kw):
+        seen["argv"], seen["kw"] = argv, kw
+        return FakeProc()
+
+    monkeypatch.setattr(cli.subprocess if hasattr(cli, "subprocess") else __import__("subprocess"),
+                        "Popen", fake_popen)
+    monkeypatch.setattr(sys, "argv", ["lo", "lens", "up", "--detach", "--llama-server", "u"])
+    monkeypatch.setattr("httpx.get", lambda *a, **k: type(
+        "R", (), {"json": lambda self: {"status": "ok"}})())
+
+    cli._detach(_detach_args())
+
+    assert seen["kw"]["start_new_session"] is True     # survives SIGHUP
+    assert "--detach" not in seen["argv"]              # child must not re-detach
+    out = capsys.readouterr().out
+    assert "pid 4242" in out
+    assert "lo lens down" in out                       # tells you how to stop it
+
+
+def test_detach_reports_a_child_that_dies_while_starting(monkeypatch, tmp_path):
+    class DeadProc:
+        pid = 5
+        returncode = 1
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(__import__("subprocess"), "Popen", lambda argv, **kw: DeadProc())
+    monkeypatch.setattr(sys, "argv", ["lo", "lens", "up", "--detach"])
+    monkeypatch.setattr("httpx.get", lambda *a, **k: (_ for _ in ()).throw(OSError("refused")))
+
+    with pytest.raises(SystemExit) as e:
+        cli._detach(_detach_args())
+    assert "exited" in str(e.value)
