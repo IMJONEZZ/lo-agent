@@ -84,6 +84,69 @@ CODE_MODE_SYSTEM_NOTE = (
     "filesystem, shell, and network only through `tools.*`."
 )
 
+# What each capability tier buys, in the model's own terms. Mirrors
+# Capabilities.tier() and the tier table in the README.
+_TIER_MEANING = {
+    0: "the agent loop, event traces, and validate-and-retry structured output",
+    1: "bit-identical replay (verified seed) and token-level confidence signals",
+    2: "grammar-constrained output, logit_bias, the sampler zoo, and think-budget control",
+    3: "cheap tree search — fork/backtrack from KV snapshots or parallel sampling",
+    4: "activation read/steer over the residual stream, LoRA hot-swap, and logit processors",
+}
+
+# Capability flags worth naming, in the order a user would ask about them.
+_CAP_LABELS = (
+    ("seed", "deterministic seeded sampling (runs replay bit-identically)"),
+    ("logprobs", "token logprobs (confidence + semantic-entropy signals)"),
+    ("logit_bias", "logit_bias"),
+    ("raw_completion", "raw completions (prefill, FIM, budget forcing)"),
+    ("kv_snapshot", "KV/slot snapshots (fork and backtrack)"),
+    ("parallel_n", "parallel sampling"),
+    ("activations", "activation reads via a paired J-Lens service"),
+    ("interventions", "activation steering (steer/ablate/swap concepts)"),
+)
+
+
+def harness_system_block(caps) -> str:
+    """A short 'what am I running inside' note.
+
+    Local models are routinely asked what they can do here; without this they
+    invent an answer. Kept deliberately terse — the point is to let the model
+    answer questions about the harness, not to teach it every feature.
+    """
+    have = [label for attr, label in _CAP_LABELS if getattr(caps, attr, False)]
+    missing = [label for attr, label in _CAP_LABELS if not getattr(caps, attr, False)]
+
+    tier = caps.tier()
+    lines = [
+        "## About this harness",
+        "You are running inside lo (lo-agent), a local-LLM agent harness. It is "
+        "event-sourced: every model call is logged with its seed, so runs can be "
+        "replayed, resumed, and diffed.",
+        f"- Model: {caps.model or 'unknown'}"
+        + (f" (served by {caps.server})" if caps.server else ""),
+    ]
+    if caps.context_window:
+        lines.append(f"- Context window: {caps.context_window:,} tokens")
+    lines.append(
+        f"- Capability tier: {tier} of 4, verified live against this server. Tiers "
+        f"are cumulative, so you also have everything below tier {tier}. Tier "
+        f"{tier} adds {_TIER_MEANING.get(tier, 'the base feature set')}."
+    )
+    if caps.grammar:
+        have.append(f"grammar-constrained decoding ({caps.grammar})")
+    if have:
+        lines.append("- Available here: " + "; ".join(have) + ".")
+    if missing:
+        lines.append("- NOT available here: " + "; ".join(missing) + ".")
+    lines.append(
+        "Answer questions about the harness from these facts. If asked about a "
+        "capability not listed, say it is unavailable on this setup rather than "
+        "guessing."
+    )
+    return "\n".join(lines)
+
+
 # Injected as a user turn before the model's last budgeted call, so the run
 # ends with an answer instead of a tool call whose result nobody will see.
 FINAL_STEP_NOTE = (
@@ -136,6 +199,7 @@ class Agent:
         log: EventLog,
         capabilities: Capabilities | None = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        self_knowledge: bool = True,  # tell the model what harness/tier it runs in
         sampling: SamplingParams | None = None,
         base_seed: int = 1,
         max_steps: int = 95,
@@ -170,6 +234,7 @@ class Agent:
         self.log = log
         self.caps = capabilities or Capabilities()
         self.system_prompt = system_prompt
+        self.self_knowledge = self_knowledge
         self.sampling = sampling or SamplingParams(temperature=0.2)  # no token cap by default
         self.base_seed = base_seed
         self.max_steps = max_steps
@@ -263,6 +328,8 @@ class Agent:
         """System prompt + frozen self-editing memory + lessons retrieved for the
         task (run-start, so it stays inside determinism/replay)."""
         content = self.system_prompt
+        if self.self_knowledge:
+            content = f"{content}\n\n{harness_system_block(self.caps)}"
         if self.code_mode:
             content = f"{content}\n\n{CODE_MODE_SYSTEM_NOTE}"
         if self.notebook is not None:
