@@ -120,7 +120,10 @@ class OpenAICompatClient:
         logprobs_content: list[dict] = []
         finish: str | None = None
         usage: dict[str, Any] = {}
-        send = {**body, "stream": True}
+        # Without include_usage the OpenAI streaming protocol never sends a usage
+        # block, so every streamed turn would log 0 tokens and /cost would read $0
+        # saved. Servers that don't know the option ignore it.
+        send = {**body, "stream": True, "stream_options": {"include_usage": True}}
         async with self._http.stream("POST", "/v1/chat/completions", json=send) as resp:
             if resp.status_code >= 400:
                 await resp.aread()  # read the body so the exception carries the server's reason

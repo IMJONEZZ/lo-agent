@@ -697,6 +697,8 @@ class HarnessApp(App):
         self._stats = {
             "calls": 0,
             "tokens": 0,
+            "tin": 0,
+            "tout": 0,
             "saved": 0.0,
             "conf": [0, 0, 0],
             "mean_lp": None,
@@ -1265,6 +1267,8 @@ class HarnessApp(App):
         self._stats = {
             "calls": calls,
             "tokens": tin + tout,
+            "tin": tin,
+            "tout": tout,
             "saved": frontier_saved(tin, tout),
             "conf": bands,
             "mean_lp": (sum(mean_lps) / len(mean_lps)) if mean_lps else None,
@@ -2063,25 +2067,32 @@ class HarnessApp(App):
         self.notify(f"wrote {path} (Markdown transcript)", timeout=6)
 
     def action_cost(self) -> None:
-        """/cost — a compact, glanceable line: $0 spent vs what it'd cost on a
-        frontier API, across this session's calls."""
+        """/cost — $0 spent, next to what the same tokens would have cost on each
+        priced frontier API."""
         if self.caps is None:
             self.notify("still connecting")
             return
         self._recompute_stats()
         self._stats_dirty = False
         s = self._stats
-        self.query_one(RichLog).write(
+        log = self.query_one(RichLog)
+        log.write(
             Text.assemble(
                 ("  $0.00 spent", "bold " + render.C_OK),
                 (
-                    f"  ·  ~{render._money(s['saved'])} the same {s['tokens']:,} tokens would cost "
-                    f"on a frontier API",
+                    f"  ·  {s['tokens']:,} tokens over {s['calls']} model call(s)"
+                    f"  ·  the same tokens elsewhere:",
                     render.C_DIM,
                 ),
-                (f"  ·  {s['calls']} call(s)", render.C_DIM),
             )
         )
+        for name, cost in render.frontier_table(s["tin"], s["tout"]):
+            log.write(
+                Text.assemble(
+                    (f"      {name:<18}", render.C_DIM),
+                    (f"~{render._money(cost)}", "bold " + render.C_ANSWER),
+                )
+            )
 
     def action_model(self) -> None:
         """/model — pick a model the endpoint serves and switch to it (re-probes)."""

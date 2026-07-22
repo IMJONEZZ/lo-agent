@@ -833,16 +833,66 @@ def welcome_panel(model: str, caps) -> RenderableType:
 # have cost on a frontier API), and we add the things an API can't show: the
 # capability tier, bit-exact determinism, and free background learning.
 
-# Frontier (Opus-class) per-token pricing for the saved-vs-frontier estimate.
-FRONTIER_IN_PER_TOK = 15.0 / 1_000_000
-FRONTIER_OUT_PER_TOK = 75.0 / 1_000_000
+# Frontier per-token pricing for the saved-vs-frontier estimate, as
+# (input $/Mtok, output $/Mtok). List prices change often and these are not
+# fetched from anywhere — check them before quoting a number to a customer.
+# Override without editing this file:
+#   LO_FRONTIER_PRICES='{"gpt-5.6-sol": [1.25, 10.0]}'   (merged over the defaults)
+FRONTIER_PRICES: dict[str, tuple[float, float]] = {
+    "claude-opus-4.8": (15.0, 75.0),
+    "gpt-5.6-sol": (1.25, 10.0),
+    "claude-fable-5": (3.0, 15.0),
+}
+
+
+def _load_price_overrides() -> None:
+    import json as _json
+    import os
+
+    raw = os.environ.get("LO_FRONTIER_PRICES")
+    if not raw:
+        return
+    try:
+        for name, pair in (_json.loads(raw) or {}).items():
+            FRONTIER_PRICES[str(name)] = (float(pair[0]), float(pair[1]))
+    except (ValueError, TypeError, IndexError, KeyError):
+        pass  # a malformed override must never take the TUI down
+
+
+_load_price_overrides()
+
+# The headline model for the status bar and the one-number `saved` field.
+FRONTIER_HEADLINE = "claude-opus-4.8"
+FRONTIER_IN_PER_TOK = FRONTIER_PRICES[FRONTIER_HEADLINE][0] / 1_000_000
+FRONTIER_OUT_PER_TOK = FRONTIER_PRICES[FRONTIER_HEADLINE][1] / 1_000_000
+
+
+def frontier_table(prompt_tok: int, completion_tok: int) -> list[tuple[str, float]]:
+    """[(model, what these tokens would have cost)] — cheapest last, so the
+    strongest number leads and the audience still sees the honest floor."""
+    rows = [
+        (name, prompt_tok * pin / 1_000_000 + completion_tok * pout / 1_000_000)
+        for name, (pin, pout) in FRONTIER_PRICES.items()
+    ]
+    return sorted(rows, key=lambda r: -r[1])
 # _SEP and _CTX_COLORS are set by set_palette() (they depend on the active theme).
 
 
 def tokens_of(p: dict) -> tuple[int, int]:
-    """(prompt, completion) tokens from a MODEL_CALL payload's usage block."""
+    """(prompt, completion) tokens from a MODEL_CALL payload's usage block.
+
+    Falls back to a chars/4 estimate over the logged request body and response
+    text when the server reported no usage — some servers ignore
+    stream_options.include_usage, and a rough count beats silently reading zero."""
     u = (p.get("response") or {}).get("usage") or {}
-    return int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
+    tin, tout = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
+    if tin or tout:
+        return tin, tout
+    body = p.get("request_body") or {}
+    tin = context_used(body.get("messages") or [], body.get("tools"))
+    choice = ((p.get("response") or {}).get("choices") or [{}])[0]
+    tout = _dict_msg_tokens(choice.get("message") or {})
+    return tin, tout
 
 
 def frontier_saved(prompt_tok: int, completion_tok: int) -> float:
@@ -1021,13 +1071,17 @@ def usage_panel(
     body.append("cost\n", style="bold")
     body.append("  $0.00 spent", style="bold " + C_OK)
     body.append(
-        f"   ~{_money(saved)} the same {toks:,} tokens would cost on an "
-        f"Opus-class API\n",
+        f"   {toks:,} tokens across {calls} model call(s). The same tokens elsewhere:\n",
         style=C_DIM,
     )
+    for name, cost in frontier_table(stats.get("tin", 0), stats.get("tout", 0)) or [
+        (FRONTIER_HEADLINE, saved)
+    ]:
+        body.append(f"    {name:<18}", style=C_DIM)
+        body.append(f"~{_money(cost)}\n", style="bold " + C_ANSWER)
     body.append(
-        f"  across {calls} model call(s) — local marginal cost is zero, so "
-        "best-of-N and background learning are free.\n\n",
+        "  local marginal cost is zero, so best-of-N and background learning "
+        "are free.\n\n",
         style=C_DIM,
     )
 

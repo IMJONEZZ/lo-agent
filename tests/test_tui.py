@@ -3,6 +3,8 @@
 import asyncio
 import io
 
+import pytest
+
 from rich.console import Console
 from textual.widgets import DataTable, Input
 
@@ -196,6 +198,27 @@ def test_tokens_and_frontier_saved():
     assert tokens_of(p) == (100, 50)
     assert frontier_saved(100, 50) > 0
     assert tokens_of({}) == (0, 0)
+
+
+def test_tokens_of_falls_back_when_server_reports_no_usage():
+    """A server that ignores stream_options.include_usage must not make /cost
+    silently read $0 — estimate from the logged body instead."""
+    p = {
+        "request_body": {"messages": [{"role": "user", "content": "x" * 400}]},
+        "response": {"choices": [{"message": {"role": "assistant", "content": "y" * 200}}]},
+    }
+    tin, tout = tokens_of(p)
+    assert tin > 0 and tout > 0
+
+
+def test_frontier_table_prices_every_model_and_sorts_expensive_first():
+    from local_harness.tui.render import FRONTIER_PRICES, frontier_table
+
+    rows = frontier_table(1_000_000, 1_000_000)
+    assert len(rows) == len(FRONTIER_PRICES)
+    assert [c for _, c in rows] == sorted((c for _, c in rows), reverse=True)
+    assert dict(rows)["claude-opus-4.8"] == pytest.approx(90.0)
+    assert frontier_table(0, 0) and all(c == 0 for _, c in frontier_table(0, 0))
 
 
 def test_confidence_text_varies_style_by_logprob():
