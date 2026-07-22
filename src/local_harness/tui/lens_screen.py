@@ -15,7 +15,7 @@ import numpy as np
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Label, Static
+from textual.widgets import Input, Label, Static
 
 from . import lens_render as LR
 
@@ -61,6 +61,12 @@ class LensClient:
     async def generate(self, **body):
         return await self._post("/lens/generate", body)
 
+    async def live_push(self, interventions):
+        return await self._post("/lens/live/push", {"interventions": interventions})
+
+    async def live_clear(self):
+        return await self._post("/lens/live/clear", {})
+
     async def search_tokens(self, q, limit=20):
         return (await self._get("/lens/search_tokens", {"q": q, "limit": limit}))["results"]
 
@@ -87,15 +93,29 @@ class LensScreen(ModalScreen[None]):
         ("a", "ablate", "Ablate"),
         ("w", "swap", "Swap"),
         ("c", "clear_interventions", "Clear ivs"),
+        ("question_mark", "help", "Help"),
+        ("e", "edit_text", "Edit text"),
+        ("r", "reseed", "Latest turn"),
+        ("n", "continue_gen", "Generate"),
+        ("V", "live_push", "Steer chat"),
     ]
 
     def __init__(self, lens_url: str, *, prompt: str | None = None,
-                 tokens: list[int] | None = None, can_steer: bool = False):
+                 tokens: list[int] | None = None, can_steer: bool = False,
+                 source: str = "", seed_provider=None):
         super().__init__()
         self.client = LensClient(lens_url)
         self._prompt = prompt
         self._tokens = tokens
         self.can_steer = can_steer
+        # Where the analyzed text came from, shown in the header. The tab used to
+        # fall back to a hardcoded pangram, so users could not tell whether they
+        # were looking at their own turn or filler.
+        self._source = source
+        self._seed_provider = seed_provider
+        self._n_predict = 0
+        self._show_help = False
+        self._live_pushed = False
         self.vocab: list[str] = []
         self.slice = None
         self.top_ids = None
@@ -112,28 +132,45 @@ class LensScreen(ModalScreen[None]):
         with Vertical(id="lensbox"):
             with VerticalScroll(id="lensbody"):
                 yield Static(id="lenscontent")
-            yield Label("↑↓←→ move · p pin · d decompose · g A/B · L logit-lens · esc close",
-                        id="lenshint")
+            yield Input(placeholder="text to analyze — enter to run, esc to cancel",
+                        id="lensinput")
+            yield Label(self._hint_text(), id="lenshint")
+
+    def _hint_text(self) -> str:
+        parts = ["↑↓←→ move", "d decompose", "p pin", "e edit", "r latest turn",
+                 "n generate"]
+        if self.can_steer:
+            parts += ["s steer", "a ablate", "V steer chat"]
+        return " · ".join(parts) + " · ? help · esc close"
 
     async def on_mount(self) -> None:
+        self.query_one("#lensinput").display = False
         self.query_one("#lensbody").focus()
         try:
             self.vocab = await self.client.vocab()
+        except Exception as e:  # noqa: BLE001
+            self._status = f"lens error: {e}"
+            self._repaint()
+            return
+        if not self._tokens and not self._prompt:
+            self._repaint()  # empty state — never analyze text the user didn't pick
+            return
+        try:
             await self._run_slice()
         except Exception as e:  # noqa: BLE001
             self._status = f"lens error: {e}"
             self._repaint()
 
     async def _run_slice(self):
-        self._status = "computing slice…"
+        self._status = ("generating…" if self._n_predict else "computing slice…")
         self._repaint()
         body = {"stride": 4, "top_n": 5, "use_lens": self.use_lens}
+        if self._n_predict:
+            body["n_predict"] = self._n_predict
         if self._tokens:
             body["tokens"] = self._tokens
-        elif self._prompt:
-            body["prompt"] = self._prompt
         else:
-            body["prompt"] = "The quick brown fox jumps over the lazy dog."
+            body["prompt"] = self._prompt
         if self._interventions:
             body["interventions"] = self._interventions
         self.slice = await self.client.slice(**body)
@@ -171,8 +208,16 @@ class LensScreen(ModalScreen[None]):
         return out
 
     def _repaint(self):
+        if self._show_help:
+            self.query_one("#lenscontent", Static).update(LR.help_panel())
+            return
         if self.slice is None:
-            self.query_one("#lenscontent", Static).update(self._status or "…")
+            if self._status:
+                self.query_one("#lenscontent", Static).update(self._status)
+            else:
+                self.query_one("#lenscontent", Static).update(
+                    LR.empty_state("No turn from the chat to read yet — the lens "
+                                   "will not invent one for you."))
             return
         pieces = self.slice["pieces"]
         grid = LR.lens_grid(
@@ -180,10 +225,14 @@ class LensScreen(ModalScreen[None]):
             final_ids=self._final_ids(), cursor=self.cursor, vocab=self.vocab,
             boundary=self.slice.get("n_prompt"),
         )
-        header = (f"{self.slice.get('generated_text','') and 'turn' or 'prompt'}  "
-                  f"{'logit-lens' if not self.use_lens else 'lens'} · "
-                  f"{len(self.slice['tokens'])} tok × {len(self._layers)} layers"
-                  + (f"  [{self._status}]" if self._status else ""))
+        n_gen = int(self.slice.get("n_gen") or 0)
+        header = (
+            f"{self._source or 'text'}  ·  "
+            f"{'logit-lens' if not self.use_lens else 'lens'} · "
+            f"{len(self.slice['tokens'])} tok × {len(self._layers)} layers"
+            + (f" ({n_gen} generated)" if n_gen else "")
+            + ("  · steering the chat" if self._live_pushed else "")
+            + (f"  [{self._status}]" if self._status else ""))
         readout = LR.cell_readout_panel(self._readout, self.vocab) if self._readout else None
         pins = LR.pins_panel(self._pins_cache) if getattr(self, "_pins_cache", None) else None
         dec = self._decompose
@@ -285,10 +334,89 @@ class LensScreen(ModalScreen[None]):
              "piece_a": self.vocab[a], "piece_b": piece})
 
     async def action_clear_interventions(self) -> None:
+        if self._live_pushed:
+            # otherwise the chat stays steered by a set the tab no longer shows
+            try:
+                await self.client.live_clear()
+            except Exception as e:  # noqa: BLE001
+                self.notify(f"could not clear chat steering: {e}", severity="error")
+            self._live_pushed = False
         if self._interventions:
             self._interventions = []
             self.notify("cleared interventions")
+            await self._safe_slice()
+
+    def action_help(self) -> None:
+        self._show_help = not self._show_help
+        self._repaint()
+
+    def action_edit_text(self) -> None:
+        """Type the text to analyze — the tab never picks one for you."""
+        inp = self.query_one("#lensinput", Input)
+        inp.display = True
+        inp.value = self._prompt or ""
+        inp.focus()
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        text = (event.value or "").strip()
+        inp = self.query_one("#lensinput", Input)
+        inp.display = False
+        self.query_one("#lensbody").focus()
+        if not text:
+            return
+        self._prompt, self._tokens, self._source = text, None, "your text"
+        self._show_help = False
+        await self._safe_slice()
+
+    async def action_reseed(self) -> None:
+        """Pull the newest turn from the chat (the tab may have been open a while)."""
+        if self._seed_provider is None:
+            self.notify("no chat to read from")
+            return
+        text, source = self._seed_provider()
+        if not text:
+            self.notify("no completed turn in the chat yet")
+            return
+        self._prompt, self._tokens, self._source = text, None, source
+        self._show_help = False
+        await self._safe_slice()
+
+    async def action_continue_gen(self) -> None:
+        """Generate a continuation THROUGH the lens, so the grid covers the tokens
+        as they are produced instead of re-reading finished text."""
+        if self._prompt is None and self._tokens is None:
+            self.notify("nothing to continue — press e to enter text")
+            return
+        self._n_predict = 24 if not self._n_predict else self._n_predict + 24
+        self._show_help = False
+        await self._safe_slice()
+
+    async def action_live_push(self) -> None:
+        """Send the intervention set to the backend so the NEXT real chat turn is
+        steered by it — the lens stops being read-only."""
+        if not self.can_steer:
+            self.notify("this endpoint is INSPECT-only (no intervention capability)",
+                        severity="warning")
+            return
+        if not self._interventions:
+            self.notify("no interventions to push — add one with s/a/w first")
+            return
+        try:
+            out = await self.client.live_push(self._interventions)
+        except Exception as e:  # noqa: BLE001
+            self.notify(f"live push failed: {e}", severity="error")
+            return
+        self._live_pushed = True
+        self.notify(f"pushed {out.get('count', len(self._interventions))} intervention(s) — "
+                    "your next chat turn is steered (c clears)", timeout=8)
+        self._repaint()
+
+    async def _safe_slice(self) -> None:
+        try:
             await self._run_slice()
+        except Exception as e:  # noqa: BLE001
+            self._status = f"lens error: {e}"
+            self._repaint()
 
     def action_close(self) -> None:
         self.dismiss(None)

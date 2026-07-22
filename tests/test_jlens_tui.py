@@ -117,3 +117,77 @@ async def test_lens_screen_renders_grid(monkeypatch):
             await ls.action_cursor(1, 0)
             assert ls.cursor[0] == 1
         server.should_exit = True
+
+
+# --------------------------------------------------- sourcing + discoverability --
+
+
+def test_help_panel_documents_every_binding():
+    """The hint bar can only show a few keys; ? must cover all of them."""
+    from local_harness.tui.lens_screen import LensScreen
+
+    text = _render(LR.help_panel())
+    bound = {b[0] for b in LensScreen.BINDINGS}
+    bound.discard("question_mark")
+    for key in bound - {"up", "down", "left", "right", "q", "escape"}:
+        assert key in text, f"{key!r} is bound but undocumented in the help panel"
+    assert "generated" in text  # explains the prompt/generation divider
+
+
+def test_empty_state_offers_a_way_forward():
+    out = _render(LR.empty_state("No turn from the chat to read yet"))
+    assert "Nothing to read yet" in out
+    for key in ("e", "r", "?"):
+        assert key in out
+
+
+@pytest.mark.asyncio
+async def test_screen_with_no_prompt_shows_empty_state_and_slices_nothing(monkeypatch):
+    """It used to silently analyze a hardcoded pangram, which read as a random prompt."""
+    from textual.app import App
+
+    from local_harness.tui.lens_screen import LensScreen
+
+    with MockSidecar() as sc:
+        import uvicorn
+        app_svc = create_app(_mock_service(monkeypatch, sc))
+        cfg = uvicorn.Config(app_svc, host="127.0.0.1", port=0, log_level="error")
+        server = uvicorn.Server(cfg)
+        t = threading.Thread(target=server.run, daemon=True)
+        t.start()
+        for _ in range(100):
+            if server.started and server.servers:
+                break
+            time.sleep(0.05)
+        port = server.servers[0].sockets[0].getsockname()[1]
+
+        class Host(App):
+            def on_mount(self):
+                self.push_screen(LensScreen(f"http://127.0.0.1:{port}"))  # no prompt
+
+        async with Host().run_test() as pilot:
+            for _ in range(20):
+                await pilot.pause(0.1)
+            ls = [s for s in pilot.app.screen_stack if isinstance(s, LensScreen)][0]
+            assert ls.slice is None            # nothing analyzed without a choice
+            assert ls.vocab                    # but the service was reached
+        server.should_exit = True
+
+
+def test_lens_seed_prefers_the_prompt_you_sent(tmp_path):
+    """Seeding with the answer only ever re-reads finished text."""
+    from local_harness.events.log import EventLog
+    from local_harness.tui.app import HarnessApp
+
+    log = EventLog(str(tmp_path / "e.db"))
+    run_id = log.create_run("explain backprop")
+
+    app = HarnessApp.__new__(HarnessApp)   # no TUI mount; just the seed logic
+    app.event_log = log
+    app._run_ids = [run_id]
+    text, source = app._lens_seed()
+    assert text == "explain backprop"
+    assert "prompt" in source
+
+    app._run_ids = []
+    assert app._lens_seed() == (None, "")

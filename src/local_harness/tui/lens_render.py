@@ -167,6 +167,76 @@ def interventions_panel(specs: list[dict], mode: str, vocab=None) -> RenderableT
     return t
 
 
+_HELP_ROWS = [
+    ("what am I looking at?", None),
+    ("", "Each column is a layer, each row a token of the turn. A cell shows what "
+         "the model's residual stream 'means' at that layer — the tokens it would "
+         "decode to if you read it out there. Watch a concept sharpen left→right."),
+    ("", "A dim divider separates your prompt from what the model generated."),
+    ("moving around", None),
+    ("↑ ↓ ← →", "move the cursor; the readout below follows the selected cell"),
+    ("d", "decompose the selected cell into contributing directions"),
+    ("p", "pin the cell's top token — pinned tokens get a rank-per-layer strip"),
+    ("L", "toggle lens ⇄ logit-lens (raw unembedding readout)"),
+    ("reading a different turn", None),
+    ("e", "edit the text being analyzed (type your own)"),
+    ("r", "re-run on the latest turn from the chat"),
+    ("n", "generate a continuation through the lens, so you watch it token by token"),
+    ("steering (needs an intervention-capable endpoint)", None),
+    ("s", "steer toward the cell's token (adds it, then re-slices)"),
+    ("a", "ablate the cell's token"),
+    ("w", "swap the last pinned token with the cell's token"),
+    ("g", "A/B generate: baseline vs the current intervention set"),
+    ("V", "push these interventions to the chat — steers your NEXT real turn"),
+    ("c", "clear interventions (also clears any pushed to the chat)"),
+    ("", None),
+    ("? / esc", "toggle this help / close the lens"),
+]
+
+
+def help_panel() -> RenderableType:
+    """The key legend. The tab binds 14 keys; the hint bar can only show a few."""
+    t = Text()
+    for key, desc in _HELP_ROWS:
+        if desc is None:
+            t.append(f"\n{key}\n" if key else "\n", style="bold " + R.C_GOLD)
+            continue
+        if key:
+            t.append(f"  {key:<10}", style="bold " + R.C_ANSWER)
+            t.append(f"{desc}\n", style=R.C_DIM)
+        else:
+            for line in _wrap(desc, 76):
+                t.append(f"  {line}\n", style=R.C_DIM)
+    return Panel(t, title="lens — keys", border_style=R.C_GOLD, expand=False)
+
+
+def _wrap(s: str, width: int) -> list[str]:
+    out, line = [], ""
+    for word in s.split():
+        if len(line) + len(word) + 1 > width:
+            out.append(line)
+            line = word
+        else:
+            line = f"{line} {word}".strip()
+    if line:
+        out.append(line)
+    return out
+
+
+def empty_state(reason: str) -> RenderableType:
+    """Shown when there is no turn to read — never analyze text the user didn't pick."""
+    t = Text()
+    t.append("Nothing to read yet\n\n", style="bold " + R.C_GOLD)
+    t.append(f"{reason}\n\n", style=R.C_DIM)
+    t.append("  e", style="bold " + R.C_ANSWER)
+    t.append("  type the text you want to analyze\n", style=R.C_DIM)
+    t.append("  r", style="bold " + R.C_ANSWER)
+    t.append("  re-run on the latest turn from the chat\n", style=R.C_DIM)
+    t.append("  ?", style="bold " + R.C_ANSWER)
+    t.append("  what this tab shows and every key\n", style=R.C_DIM)
+    return Panel(t, border_style=R.C_GOLD, expand=False)
+
+
 def lens_screen(*, header: str, grid, readout=None, pins=None, decompose=None,
                 interventions=None, hint: str = "") -> RenderableType:
     """Compose the full lens tab."""

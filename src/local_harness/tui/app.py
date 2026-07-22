@@ -2888,22 +2888,34 @@ class HarnessApp(App):
                 return None
         return None
 
-    def _last_turn_text(self) -> str | None:
-        """The most recent answer text (to seed the lens with the real turn)."""
+    def _lens_seed(self) -> tuple[str | None, str]:
+        """(text, where-it-came-from) to seed the lens with.
+
+        Prefer the prompt YOU sent: the lens can then generate from it and show
+        the continuation being produced. Seeding with the model's answer instead
+        only ever re-reads finished text, which is why the tab used to feel like
+        it ran after the turn rather than during it.
+        """
         try:
+            if not self._run_ids:
+                return None, ""
+            run_id = self._run_ids[-1]
+            meta = self.event_log.run(run_id)
+            if meta is not None and getattr(meta, "task", None):
+                return meta.task, "your last prompt"
+
             from ..events.log import MODEL_CALL, RUN_COMPLETED
-            events = self.event_log.events(self._run_ids[-1]) if self._run_ids else []
-            for e in reversed(events):
+            for e in reversed(self.event_log.events(run_id)):
                 if e.type == RUN_COMPLETED and e.payload.get("answer"):
-                    return e.payload["answer"]
+                    return e.payload["answer"], "the last answer"
                 if e.type == MODEL_CALL:
-                    resp = e.payload.get("response") or {}
-                    msg = (resp.get("choices") or [{}])[0].get("message") or {}
+                    msg = ((e.payload.get("response") or {}).get("choices")
+                           or [{}])[0].get("message") or {}
                     if msg.get("content"):
-                        return msg["content"]
+                        return msg["content"], "the last answer"
         except Exception:
             pass
-        return None
+        return None, ""
 
     def action_jacobian(self) -> None:
         """Open the Jacobian-lens tab (Rung 6: read/steer the residual stream)."""
@@ -2927,7 +2939,9 @@ class HarnessApp(App):
                 severity="warning", timeout=10)
             return
         can_steer = bool(self.caps and getattr(self.caps, "interventions", False))
-        self.push_screen(LensScreen(url, prompt=self._last_turn_text(), can_steer=can_steer))
+        text, source = self._lens_seed()
+        self.push_screen(LensScreen(url, prompt=text, source=source, can_steer=can_steer,
+                                    seed_provider=self._lens_seed))
 
     def action_usage(self) -> None:
         """Open the usage & advantages overlay (cost / determinism / confidence)."""
