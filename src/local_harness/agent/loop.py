@@ -735,6 +735,15 @@ class Agent:
                 call_index = event.payload["call_index"] + 1
                 pending = {tc.id: tc for tc in msg.tool_calls}
             elif event.type == USER_MESSAGE:
+                # An interrupt can leave the last assistant turn's tool calls
+                # without results. Close the pairs before the new user turn —
+                # an orphaned tool_calls message corrupts the chat template on
+                # every later turn of the conversation.
+                for tc in pending.values():
+                    messages.append(Message(
+                        role="tool",
+                        content="[interrupted — this tool never ran]",
+                        tool_call_id=tc.id, name=tc.name))
                 messages.append(Message(role="user", content=event.payload["content"]))
                 pending = {}
             elif event.type == TOOL_CALL:

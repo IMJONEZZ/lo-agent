@@ -92,6 +92,29 @@ async def test_streaming_recovers_logprobs_on_llamacpp(tmp_path):
     assert call.payload["logprob_summary"] is not None  # logprobs recovered despite streaming
 
 
+def test_interrupted_tool_calls_are_closed_before_a_new_user_turn(tmp_path):
+    """Interrupt mid-tool-call, then send a new message: the rebuilt transcript
+    used to carry an assistant tool_calls message with NO tool results before
+    the user turn — which corrupts the chat template on every later turn."""
+    log = EventLog(tmp_path / "e.db")
+    agent = make_agent(MockLlamaCpp(script={}), log)
+    run_id = log.create_run("compute something")
+    log.append(run_id, MODEL_CALL, {"call_index": 0, "response": chat_response(
+        tool_calls=[("c1", "calculator", '{"expression": "1+1"}')])})
+    from local_harness.events.log import USER_MESSAGE
+    log.append(run_id, USER_MESSAGE, {"content": "never mind — new question"})
+
+    messages, _, pending = agent._reconstruct(run_id, "compute something")
+
+    roles = [m.role for m in messages]
+    i = roles.index("assistant")
+    assert roles[i + 1] == "tool"                      # the pair is closed
+    assert messages[i + 1].tool_call_id == "c1"
+    assert "never ran" in messages[i + 1].content
+    assert roles[i + 2] == "user"                      # then the new turn
+    assert not pending                                 # nothing left to execute
+
+
 async def test_crash_then_resume(tmp_path):
     log = EventLog(tmp_path / "e.db")
     crashing = MockLlamaCpp(script=SCRIPT, fail_after=2)
