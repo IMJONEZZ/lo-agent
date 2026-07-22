@@ -3,7 +3,12 @@
 Each coroutine runs ONE advantage against the *connected* endpoint and returns a
 Rich renderable for the transcript. These back the TUI slash-commands
 (/samplers /antislop /overlay /consistency /escalate /bestof /thinkbudget) so the
-advantages are things you can actually *do* in the harness — not just claims.
+advantages are things you can actually *do* in the harness.
+
+Every advantage takes an optional `arg`: whatever the user types after the slash
+command becomes the prompt, e.g. `/overlay Is a 30y Treasury suitable here?`.
+With no arg each falls back to its built-in prompt. `/grammar N` sets the count;
+`/antislop word1, word2 | prompt` sets the banned words.
 
 Reasoning models (Step, GLM) ignore enable_thinking and reason in-channel, so we
 give every call a generous token budget: reasoning is free locally, and a model
@@ -17,7 +22,7 @@ import re
 import time
 from dataclasses import replace
 
-from rich.console import Group, RenderableType
+from rich.console import RenderableType
 from rich.panel import Panel
 from rich.text import Text
 
@@ -82,33 +87,125 @@ async def _stream_samples(client, messages, sampling, n, base_seed, on_sample):
     return await asyncio.gather(*[one(i) for i in range(n)])
 
 
-async def _fan_consensus(client, caps, msgs, n, key, sampling, live, base_seed, title):
+async def _fan_consensus(client, caps, msgs, n, key, sampling, live, base_seed, title,
+                         agent_factory=None, semantic=None):
     """Sample N rollouts (streamed into fan rows when live), vote via `key`, and
-    return (representative answer, agreement fraction). Falls back to the plain
-    self_consistency path when there's no live view to stream into."""
-    from collections import Counter
+    return (representative answer, agreement fraction, groups) — where groups is
+    [(vote key, count, representative text), …] most-agreed first. The caller needs
+    the spread, not just the winner: reading *which* answers disagree is the signal."""
+    from ..tree.search.self_consistency import collect_samples
+    question = next((m.content for m in reversed(msgs) if m.role == "user"), "")
+    if agent_factory is not None:
+        # Each rollout is a full agent run: it may retrieve and call tools before
+        # answering, so the agreement we measure is over *grounded* answers.
+        if live is not None:
+            live.fan([str(i + 1) for i in range(n)], title)
 
-    from ..tree.search.self_consistency import self_consistency
-    if live is None:
-        return await self_consistency(client, caps, msgs, n=n, key=key,
-                                      sampling=sampling, base_seed=base_seed)
-    live.fan([str(i + 1) for i in range(n)], title)
-    results = await _stream_samples(client, msgs, sampling, n, base_seed, live.fan_token)
-    for i, (t, _) in enumerate(results):
-        live.fan_done(i, key(t) if t else "—")
-    texts = [t for t, _ in results if t]
+        async def one(i):
+            cb = None
+            if live is not None:
+                def cb(kind, text, _i=i):   # noqa: E306
+                    if kind in ("content", "reasoning"):
+                        live.fan_token(_i, kind, text)
+            try:
+                ans, _lp = await _tool_answer(agent_factory, caps, question, base_seed + i, cb)
+            except Exception:  # noqa: BLE001 — one rollout must not sink the fan-out
+                ans = ""
+            if live is not None:
+                live.fan_done(i, (key(ans) if ans else "—")[:24])
+            return ans
+        texts = [t for t in await asyncio.gather(*[one(i) for i in range(n)]) if t]
+    elif live is None:
+        texts = [t for t in await collect_samples(
+            client, caps, msgs, n=n, sampling=sampling, base_seed=base_seed) if t]
+    else:
+        live.fan([str(i + 1) for i in range(n)], title)
+        results = await _stream_samples(client, msgs, sampling, n, base_seed, live.fan_token)
+        for i, (t, _) in enumerate(results):
+            live.fan_done(i, key(t) if t else "—")
+        texts = [t for t, _ in results if t]
     if not texts:
-        return "", 0.0
-    counts = Counter(key(t) for t in texts)
-    top_key, freq = counts.most_common(1)[0]
-    answer = next(t for t in texts if key(t) == top_key)
-    return answer, freq / len(texts)
+        return "", 0.0, [], False
+    groups, sem = await _group(client, question, texts, key, semantic)
+    return groups[0][2], groups[0][1] / len(texts), groups, sem
 
 
-def _panel(title, body, frontier) -> RenderableType:
-    group = Group(body, Text(""),
-                  Text(f"frontier API (Claude/GPT/Gemini): {frontier}", style=render.C_DIM))
-    return Panel(group, title=title, title_align="left",
+# Answers at or under this length are treated as "short form" (a number, T+1,
+# yes/no) where exact-match voting is correct. Longer prose is meaning-clustered
+# instead — surface-form voting reports false uncertainty on paraphrases.
+_SHORT_FORM = 48
+
+
+def _parse_arg(arg: str) -> tuple[set[str], str]:
+    """Split leading `--flags` off an advantage argument.
+
+    `--tools What is the settlement cycle?` → ({"tools"}, "What is the …?")
+    Recognized: --tools (agent loop w/ retrieval), --semantic / --lexical
+    (force the /consistency grouping mode instead of auto-detecting)."""
+    flags: set[str] = set()
+    rest = (arg or "").strip()
+    while rest.startswith("--"):
+        tok, _, remainder = rest.partition(" ")
+        flags.add(tok[2:].strip().lower())
+        rest = remainder.strip()
+    return flags, rest
+
+
+def _final_logprobs(log, run_id):
+    """Per-token logprobs of the agent's LAST model call — i.e. the confidence of
+    the answer it gave *after* its tools came back."""
+    from ..events.log import MODEL_CALL
+    from ..inference.types import GenerationResponse
+    evs = log.events(run_id, type=MODEL_CALL)
+    if not evs:
+        return None
+    try:
+        return GenerationResponse.from_chat_response(
+            evs[-1].payload.get("response") or {}, 0.0).logprobs
+    except Exception:  # noqa: BLE001 — confidence is best-effort here
+        return None
+
+
+async def _tool_answer(agent_factory, caps, prompt, seed, on_token=None):
+    """One tool-enabled agent run → (answer, final-call logprobs).
+
+    The agent retrieves and calls tools; we then measure confidence on the answer
+    it produced *with* that evidence, which is the number worth reading."""
+    agent = agent_factory(on_token)
+    agent.base_seed = seed
+    if getattr(caps, "logprobs", False):
+        agent.sampling = replace(agent.sampling, logprobs=True, top_logprobs=2)
+    res = await agent.run(prompt)
+    return (res.answer or "").strip(), _final_logprobs(agent.log, res.run_id)
+
+
+async def _group(client, question, texts, key, semantic):
+    """Group samples for voting → ([(label, count, representative)], semantic?).
+
+    Lexical exact-match for short canonical answers; meaning-clustering (semantic
+    entropy, Farquhar 2024) for prose, where paraphrases of one answer would
+    otherwise read as disagreement. `semantic=None` auto-detects on answer length."""
+    from collections import Counter
+    if semantic is None:
+        semantic = not all(len(_flat(t)) <= _SHORT_FORM for t in texts)
+    if not semantic:
+        counts = Counter(key(t) for t in texts)
+        return ([(k, c, next(t for t in texts if key(t) == k))
+                 for k, c in counts.most_common()], False)
+    from ..signals.semantic_entropy import _cluster
+    clusters, _judged = await _cluster(client, question, texts)
+    clusters = sorted(clusters, key=len, reverse=True)
+    return ([(c[0], len(c), c[0]) for c in clusters], True)
+
+
+def _flat(t: str, limit: int | None = None) -> str:
+    """Collapse whitespace so a multi-line answer reads as one line in a panel."""
+    out = " ".join((t or "").split())
+    return out if limit is None or len(out) <= limit else out[:limit] + "…"
+
+
+def _panel(title, body) -> RenderableType:
+    return Panel(body, title=title, title_align="left",
                  border_style=render.B_ACCENT, padding=(1, 2))
 
 
@@ -118,7 +215,7 @@ def _overlap(a: str, b: str) -> float:
 
 
 # ── /samplers ──────────────────────────────────────────────────────────────
-async def samplers(client, caps, live=None) -> RenderableType:
+async def samplers(client, caps, live=None, arg: str = "") -> RenderableType:
     extra: dict = {}
     zoo = getattr(caps, "sampler_zoo", None) or []
     if "dry" in zoo:
@@ -130,9 +227,10 @@ async def samplers(client, caps, live=None) -> RenderableType:
     body = Text()
     if not extra:
         body.append("no advanced samplers exposed on this endpoint", render.AMBER)
-        return _panel("⚡ sampler zoo", body, "temperature / top_p / top_k only")
+        return _panel("⚡ sampler zoo", body)
     on_token = live.token if live is not None else None
-    prompt = "List 25 single words you might say to describe a stormy sea. Comma-separated."
+    prompt = arg.strip() or (
+        "List 25 single words you might say to describe a stormy sea. Comma-separated.")
     base, _ = await _gen(client, prompt, seed=3, on_token=on_token)
     tuned, _ = await _gen(client, prompt, seed=3, extra=extra, on_token=on_token)
     ov = _overlap(base, tuned)
@@ -144,12 +242,11 @@ async def samplers(client, caps, live=None) -> RenderableType:
     body.append(tuned[:80] + "\n", render.C_ANSWER)
     body.append(f"\nword-set overlap {ov:.0%} ", render.GOLD)
     body.append("— same seed; lower overlap = the samplers steered the trajectory", render.C_DIM)
-    return _panel("⚡ sampler zoo (DRY · min_p · XTC)", body,
-                  "rejects these params — only temperature / top_p / top_k")
+    return _panel("⚡ sampler zoo (DRY · min_p · XTC)", body)
 
 
 # ── /grammar ───────────────────────────────────────────────────────────────
-async def grammar(client, caps, live=None) -> RenderableType:
+async def grammar(client, caps, live=None, arg: str = "") -> RenderableType:
     from ..skills.exec import build_pipeline, generate_with_skill
     from ..skills.ir import Grammar
     from ..skills.skill import Skill
@@ -157,11 +254,12 @@ async def grammar(client, caps, live=None) -> RenderableType:
     # 137-long rule does NOT enforce on the guided-grammar boxes (Step emits 196,
     # GLM 0). The point — exact-N is unrepresentable-if-wrong — holds at any N.
     n = 39
+    if arg.strip().isdigit():   # /grammar 127 — override the count
+        n = max(1, int(arg.strip()))
     body = Text()
     if getattr(caps, "grammar", None) is None:
         body.append("no grammar support here — falls back to validate-and-retry", render.AMBER)
-        return _panel("⚡ grammar: exactly-N by construction", body,
-                      "miscounts a long run (Opus 4.8 gave 139 for 137) — no structural guarantee")
+        return _panel("⚡ grammar: exactly-N by construction", body)
     skill = Skill(name="exact_sevens",
                   grammar=Grammar.from_rules({"root": " ".join(['"7"'] * n)}, root="root"),
                   system_prompt="Output only the characters requested.",
@@ -197,12 +295,11 @@ async def grammar(client, caps, live=None) -> RenderableType:
     body.append(f"   valid={valid}   grammar={caps.grammar}\n", render.C_DIM)
     body.append("\nexactly N by construction — the grammar makes a miscount unrepresentable",
                 render.C_DIM)
-    return _panel("⚡ grammar: exactly-N by construction", body,
-                  "miscounts a long run (Opus 4.8 gave 139 for 137) — no structural guarantee")
+    return _panel("⚡ grammar: exactly-N by construction", body)
 
 
 # ── /antislop ──────────────────────────────────────────────────────────────
-async def antislop(client, caps, live=None) -> RenderableType:
+async def antislop(client, caps, live=None, arg: str = "") -> RenderableType:
     from ..logits.antislop import generate_antislop
     from ..logits.budget import apply_template
     body = Text()
@@ -210,12 +307,21 @@ async def antislop(client, caps, live=None) -> RenderableType:
             await apply_template(client, [Message(role="user", content="x")]) is None:
         body.append("needs raw-completion + a chat-template endpoint (llama.cpp).\n", render.AMBER)
         body.append("elsewhere it degrades to tree-backtracking (a fork per banned hit).", render.C_DIM)
-        return _panel("⚡ anti-slop (banned phrase + KV-rewind)", body,
-                      "no token bans, no rewind, no partial resample — impossible")
+        return _panel("⚡ anti-slop (banned phrase + KV-rewind)", body)
     banned = ["dog"]
     prompt = ("Complete this sentence with the single most obvious word: "
               "'The quick brown fox jumps over the lazy ___'. "
               "Reply with the full completed sentence and nothing else.")
+    if arg.strip():   # `/antislop word1, word2 | prompt` — either side may be omitted
+        left, sep, right = arg.partition("|")
+        if sep:
+            words = [w.strip() for w in left.split(",") if w.strip()]
+            if words:
+                banned = words
+            if right.strip():
+                prompt = right.strip()
+        else:
+            prompt = arg.strip()
     msgs = [Message(role="user", content=prompt)]
     base = await generate_antislop(client, msgs, [], max_tokens=64, seed=5,
                                    prefill="<think>\n\n</think>\n\n")
@@ -226,44 +332,72 @@ async def antislop(client, caps, live=None) -> RenderableType:
     ok = clean_hits == 0 and hits > 0
     body.append(f"banned: {banned}\n", render.GOLD)
     body.append("unconstrained: ", render.C_DIM)
-    body.append(f"{base.text.strip()[:70]!r}  ({hits}× 'dog')\n", render.ROSE if hits else render.CREAM)
+    body.append(f"{base.text.strip()[:70]!r}  ({hits}× {banned[0]!r})\n",
+                render.ROSE if hits else render.CREAM)
     body.append("anti-slop:     ", render.C_DIM)
-    body.append(f"{clean.text.strip()[:70]!r}  ({clean_hits}× 'dog', {clean.rewinds} KV rewind(s))\n",
+    body.append(f"{clean.text.strip()[:70]!r}  ({clean_hits}× {banned[0]!r}, "
+                f"{clean.rewinds} KV rewind(s))\n",
                 render.C_ANSWER if ok else render.AMBER)
     body.append("\ndetect → rewind KV → ban first token → resample", render.C_DIM)
-    return _panel("⚡ anti-slop (banned phrase + KV-rewind)", body,
-                  "no token bans, no rewind, no partial resample — impossible")
+    return _panel("⚡ anti-slop (banned phrase + KV-rewind)", body)
 
 
 # ── /overlay ───────────────────────────────────────────────────────────────
-async def overlay(client, caps, live=None) -> RenderableType:
+async def overlay(client, caps, live=None, arg: str = "", agent_factory=None) -> RenderableType:
     body = Text()
     if not getattr(caps, "logprobs", False):
         body.append("no logprobs on this endpoint — the overlay can't render "
                     "(honest degrade, not faked).", render.AMBER)
-        return _panel("⚡ confidence overlay", body,
-                      "Claude exposes no logprobs at all → flat text, no doubt signal")
-    prompt = "In one sentence, why is the sky blue?"
+        return _panel("⚡ confidence overlay", body)
+    flags, prompt_arg = _parse_arg(arg)
+    use_tools = "tools" in flags and agent_factory is not None
+    prompt = prompt_arg or "In one sentence, why is the sky blue?"
     on_token = live.token if live is not None else None
-    _, r = await _gen(client, prompt, seed=3, temperature=0.7, logprobs=True, on_token=on_token)
-    toks = _answer_logprobs(r)
+    if use_tools:
+        # Agent runs with retrieval/tools; we overlay the confidence of the answer
+        # it gave AFTER its tools returned. Only hand the agent a token callback when
+        # there's a live view: a callback puts it in streaming mode, and streamed
+        # responses don't carry per-token logprobs.
+        cb = None
+        if on_token is not None:
+            def cb(kind, text):   # noqa: E306
+                if kind in ("content", "reasoning"):
+                    on_token(kind, text)
+        _ans, lps = await _tool_answer(agent_factory, caps, prompt, 3, cb)
+        toks = _clean_logprobs(lps)
+    else:
+        _, r = await _gen(client, prompt, seed=3, temperature=0.7, logprobs=True,
+                          on_token=on_token)
+        toks = _answer_logprobs(r)
     if not toks:
         body.append("endpoint returned no per-token logprobs for this generation.", render.AMBER)
-        return _panel("⚡ confidence overlay", body,
-                      "Claude exposes no logprobs at all → flat text, no doubt signal")
+        return _panel("⚡ confidence overlay", body)
     body.append(render.confidence_text(toks))
     weak = min(toks, key=lambda t: t.logprob)
     body.append("\n\nleast-confident token: ", render.C_DIM)
     body.append(f"{weak.token!r} ({weak.logprob:+.2f})", render.ROSE)
     body.append(" → flag for resample / review", render.C_DIM)
-    return _panel("⚡ confidence-as-weight overlay", body,
-                  "Claude exposes no logprobs at all → flat text, no doubt signal")
+    if use_tools:
+        body.append("\n\nanswered with tools — confidence is measured on the grounded answer",
+                    render.C_DIM)
+    return _panel("⚡ confidence-as-weight overlay", body)
+
+
+# EOS / chat-control markers a server may include in the token stream — they carry
+# no meaning for a reader, so they don't belong in the confidence overlay.
+_SPECIAL_TOK = re.compile(
+    r"^(<[|｜][^<>]*[|｜]>|</?s>|<\|?(?:endoftext|eos|end_of_turn|im_end)\|?>)$")
+
+
+def _clean_logprobs(lps):
+    """Answer-only per-token logprobs (chain-of-thought and special tokens stripped)."""
+    from ..signals.metrics import answer_logprobs
+    toks = answer_logprobs(lps or [])
+    return [t for t in toks if not _SPECIAL_TOK.match(t.token.strip())]
 
 
 def _answer_logprobs(resp):
-    """Per-token logprobs for the ANSWER only (chain-of-thought stripped)."""
-    from ..signals.metrics import answer_logprobs
-    return answer_logprobs(resp.logprobs or [])
+    return _clean_logprobs(resp.logprobs)
 
 
 # ── /consistency ───────────────────────────────────────────────────────────
@@ -278,30 +412,52 @@ def _money(a: str) -> str:
         return raw
 
 
-async def consistency(client, caps, live=None) -> RenderableType:
-    msgs = [Message(role="user", content=(
+def _generic(a: str) -> str:
+    """Vote key for a user-supplied prompt: the final number if there is one,
+    else the normalized answer text."""
+    m = re.findall(r"\d[\d,]*(?:\.\d+)?", a.replace(",", ""))
+    return m[-1] if m else " ".join(a.lower().split())[:60]
+
+
+async def consistency(client, caps, live=None, arg: str = "",
+                      agent_factory=None) -> RenderableType:
+    flags, custom = _parse_arg(arg)
+    use_tools = "tools" in flags and agent_factory is not None
+    semantic = True if "semantic" in flags else (False if "lexical" in flags else None)
+    msgs = [Message(role="user", content=custom or (
         "A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. "
         "How much does the ball cost? Answer with just the dollar amount, no explanation."))]
+    key = _generic if custom else _money
     n = 5
     sampling = SamplingParams(temperature=0.8, max_tokens=_BUDGET, extra=_NO_THINK)
     t0 = time.monotonic()
-    answer, agree = await _fan_consensus(
-        client, caps, msgs, n, _money, sampling, live, base_seed=200,
-        title="⚡ self-consistency · 5 parallel rollouts (free on prefix-cache)")
+    answer, agree, groups, sem = await _fan_consensus(
+        client, caps, msgs, n, key, sampling, live, base_seed=200,
+        title="⚡ self-consistency · 5 parallel rollouts",
+        agent_factory=agent_factory if use_tools else None, semantic=semantic)
     dt = time.monotonic() - t0
-    mode = f"{n} concurrent rollouts" if live is not None else (
-        "one parallel-n request" if getattr(caps, "parallel_n", False) else "5 prefix-cache forks")
+    mode = f"{n} tool-enabled agent runs" if use_tools else (
+        f"{n} concurrent rollouts" if live is not None else (
+            "one parallel-n request" if getattr(caps, "parallel_n", False)
+            else "5 prefix-cache forks"))
     body = Text()
     body.append(f"sampled {n} answers via {mode} in {dt:.1f}s\n", render.C_DIM)
-    body.append("consensus: ", render.C_DIM)
-    body.append(f"${_money(answer)}", render.C_ANSWER)
-    body.append("   agreement: ", render.C_DIM)
+    body.append("grouped by " + ("meaning (semantic entropy)" if sem else "exact answer") + "\n\n",
+                render.C_DIM)
+    body.append("consensus answer\n", render.C_DIM)
+    body.append(f"{_flat(answer)}\n", render.C_ANSWER)
+    body.append("\nagreement: ", render.C_DIM)
     style = render.JADE if agree >= 0.8 else render.AMBER
-    body.append(f"{agree:.0%}\n", style)
-    body.append("\nagreement is a free uncertainty signal — low agreement routes the loop "
+    body.append(f"{agree:.0%}", style)
+    body.append(f"   ({len(groups)} distinct of {n})\n", render.C_DIM)
+    if len(groups) > 1:   # the spread IS the uncertainty — show every variant
+        body.append("\nspread\n", render.C_DIM)
+        for _k, c, rep in groups:
+            body.append(f"  {c}× ", render.GOLD)
+            body.append(f"{_flat(rep, 90)}\n", render.CREAM)
+    body.append("\nagreement is the uncertainty signal — low agreement routes the loop "
                 "(resample / escalate / ask)", render.C_DIM)
-    return _panel("⚡ self-consistency (consensus = confidence)", body,
-                  "billed N× and rate-limited; the agreement signal isn't surfaced")
+    return _panel("⚡ self-consistency (consensus = confidence)", body)
 
 
 # ── /escalate ──────────────────────────────────────────────────────────────
@@ -314,8 +470,11 @@ def _num(a: str) -> str:
     return m[-1] if m else a.strip().lower()[:16]
 
 
-async def escalate(client, caps, live=None) -> RenderableType:
+async def escalate(client, caps, live=None, arg: str = "",
+                   agent_factory=None) -> RenderableType:
     from ..agent.permissions import Permissions
+    flags, prompt_arg = _parse_arg(arg)
+    use_tools = "tools" in flags and agent_factory is not None
     perms = Permissions(allow=["read_file"], ask=["write_file"], deny=["bash"])
     body = Text()
     body.append("permissions (deterministic, by tool name):  ", render.C_DIM)
@@ -323,13 +482,14 @@ async def escalate(client, caps, live=None) -> RenderableType:
         body.append(f"{tool}=", render.C_DIM)
         body.append(f"{perms.decide(tool)}  ", render.JADE)
     body.append("\n", render.C_DIM)
-    msgs = [Message(role="user", content=(
+    msgs = [Message(role="user", content=prompt_arg or (
         "How many piano tuners work in Chicago? Reply with just a single number, no explanation."))]
-    answer, agree = await _fan_consensus(
+    answer, agree, groups, _sem = await _fan_consensus(
         client, caps, msgs, 5, _num,
         SamplingParams(temperature=0.9, max_tokens=_BUDGET, extra=_NO_THINK),
         live, base_seed=300,
-        title="⚡ agreement-routed escalation · 5 parallel rollouts")
+        title="⚡ agreement-routed escalation · 5 parallel rollouts",
+        agent_factory=agent_factory if use_tools else None)
     nums = re.findall(r"\d[\d,]*", answer.replace(",", ""))
     shown = nums[-1] if nums else answer.strip()[:20]
     escalate_now = agree < 0.8
@@ -341,17 +501,25 @@ async def escalate(client, caps, live=None) -> RenderableType:
         body.append(" (resample / ask / bigger model)\n", render.C_DIM)
     else:
         body.append(" ≥ 80% → proceed\n", render.C_DIM)
-    body.append("\nconfidence lives in verification (agreement), not the permission check", render.C_DIM)
-    return _panel("⚡ agreement-routed escalation", body,
-                  "permissions are name-based; no agreement signal (no logprobs) to route on")
+    if len(groups) > 1:
+        body.append("\nspread\n", render.C_DIM)
+        for _k, c, rep in groups:
+            body.append(f"  {c}× ", render.GOLD)
+            body.append(f"{_flat(rep, 90)}\n", render.CREAM)
+    body.append("\nconfidence lives in verification (agreement), not the permission check",
+                render.C_DIM)
+    return _panel("⚡ agreement-routed escalation", body)
 
 
 # ── /bestof ────────────────────────────────────────────────────────────────
-async def bestof(client, caps, live=None) -> RenderableType:
+async def bestof(client, caps, live=None, arg: str = "", agent_factory=None) -> RenderableType:
     from ..signals.metrics import StepSignals
     from ..tree.search.best_of_n import MeanLogprobVerifier, best_of_n
     n = 4
-    msgs = [Message(role="user", content="In one short sentence, why is the sky blue?")]
+    flags, prompt_arg = _parse_arg(arg)
+    use_tools = "tools" in flags and agent_factory is not None
+    question = prompt_arg or "In one short sentence, why is the sky blue?"
+    msgs = [Message(role="user", content=question)]
     # Only request logprobs in the stream if the server actually streams them. GLM
     # serves logprobs via the /responses API, not chat streaming — asking for them
     # mid-stream errors there, so we degrade to unranked candidates (still a fan-out).
@@ -359,9 +527,33 @@ async def bestof(client, caps, live=None) -> RenderableType:
     sampling = SamplingParams(temperature=0.9, max_tokens=_BUDGET, logprobs=lp,
                               top_logprobs=2 if lp else 4, extra=_NO_THINK)
     t0 = time.monotonic()
-    if live is not None:
+    if use_tools:
+        # N independent tool-enabled agent runs, each ranked on the confidence of
+        # its own final (post-tool) answer.
+        if live is not None:
+            live.fan([str(i + 1) for i in range(n)],
+                     "⚡ best-of-N · 4 tool-enabled agent runs, verifier-ranked")
+
+        async def one(i):
+            cb = None
+            if live is not None:
+                def cb(kind, text, _i=i):   # noqa: E306
+                    if kind in ("content", "reasoning"):
+                        live.fan_token(_i, kind, text)
+            try:
+                ans, lp = await _tool_answer(agent_factory, caps, question, 100 + i, cb)
+            except Exception:  # noqa: BLE001
+                ans, lp = "", None
+            sig = StepSignals.from_logprobs(lp or [])
+            score = sig.mean_logprob if sig else float("-inf")
+            if live is not None:
+                live.fan_done(i, f"score={score:+.3f}" if score != float("-inf") else "n/a")
+            return (ans, score)
+        cands = [c for c in await asyncio.gather(*[one(i) for i in range(n)]) if c[0]]
+        cands.sort(key=lambda c: c[1], reverse=True)
+    elif live is not None:
         live.fan([str(i + 1) for i in range(n)],
-                 "⚡ best-of-N · 4 candidates streaming, verifier-ranked (forks are cache hits)")
+                 "⚡ best-of-N · 4 candidates streaming, verifier-ranked")
         results = await _stream_samples(client, msgs, sampling, n, 100, live.fan_token)
         cands = []
         for i, (text, resp) in enumerate(results):
@@ -374,30 +566,33 @@ async def bestof(client, caps, live=None) -> RenderableType:
         bn = await best_of_n(client, caps, msgs, MeanLogprobVerifier(), n=n, sampling=sampling)
         cands = [((c.text or "").strip(), c.score) for c in bn]
     dt = time.monotonic() - t0
-    mode = f"{n} concurrent rollouts" if live is not None else (
-        "one parallel-n request" if getattr(caps, "parallel_n", False) else "sequential prefix-cache forks")
-    ranked = lp and any(s != float("-inf") for _, s in cands)
+    mode = f"{n} tool-enabled agent runs" if use_tools else (
+        f"{n} concurrent rollouts" if live is not None else (
+            "one parallel-n request" if getattr(caps, "parallel_n", False)
+            else "sequential prefix-cache forks"))
+    ranked = any(s != float("-inf") for _, s in cands)
     body = Text()
     body.append(f"sampled {n} candidates via {mode} in {dt:.1f}s\n", render.C_DIM)
     for text, score in cands:
         s = f"{score:+.3f}" if ranked else "  n/a"
         body.append(f"  score={s}  ", render.GOLD)
         body.append(f"{text[:58]!r}\n", render.CREAM)
-    body.append("\nbest selected by the verifier — forks are cache hits, not N× billing", render.C_DIM)
-    return _panel("⚡ free-tokens best-of-N (verifier-ranked)", body,
-                  "billed N× per sample, rate-limited, no prefix-cache discount")
+    body.append("\nbest selected by the verifier — "
+                + ("each run retrieved independently" if use_tools
+                   else "forks reuse the shared prefix"), render.C_DIM)
+    return _panel("⚡ best-of-N (verifier-ranked)", body)
 
 
 # ── /thinkbudget ───────────────────────────────────────────────────────────
-async def thinkbudget(client, caps, live=None) -> RenderableType:
+async def thinkbudget(client, caps, live=None, arg: str = "") -> RenderableType:
     from ..logits.budget import apply_template, generate_with_think_budget
     body = Text()
     if not getattr(caps, "raw_completion", False) or \
             await apply_template(client, [Message(role="user", content="x")]) is None:
         body.append("needs raw-completion + a chat-template endpoint (llama.cpp).", render.AMBER)
-        return _panel("⚡ think-budget forcing (s1-style)", body,
-                      "coarse thinking toggle only; no token-level </think> control")
-    msgs = [Message(role="user", content="How many r's are in 'strawberry'? Think, then answer.")]
+        return _panel("⚡ think-budget forcing (s1-style)", body)
+    msgs = [Message(role="user", content=arg.strip() or (
+        "How many r's are in 'strawberry'? Think, then answer."))]
     r = await generate_with_think_budget(client, msgs, think_budget=64, seed=2)
     body.append("budget = 64 reasoning tokens\n", render.GOLD)
     body.append("reasoning used: ", render.C_DIM)
@@ -407,9 +602,14 @@ async def thinkbudget(client, caps, live=None) -> RenderableType:
     body.append(f"{r.answer[:80]!r}\n", render.C_ANSWER)
     body.append("\nreasoning length capped at the token level (bias </think>, s1 'Wait' continuation)",
                 render.C_DIM)
-    return _panel("⚡ think-budget forcing (s1-style)", body,
-                  "coarse thinking toggle only; no token-level </think> control")
+    return _panel("⚡ think-budget forcing (s1-style)", body)
 
+
+# Advantages whose samples can run through the full agent loop (tools + retrieval)
+# when invoked with `--tools`. The others are decoding-mechanics demos — grammar,
+# samplers, token bans, reasoning budget — where a mid-generation tool call would
+# change the very thing being measured.
+TOOL_CAPABLE = frozenset({"overlay", "consistency", "escalate", "bestof"})
 
 ADVANTAGES = {
     "grammar": grammar,

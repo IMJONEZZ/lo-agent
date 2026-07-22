@@ -2368,14 +2368,14 @@ class HarnessApp(App):
         "approve": "approve the pending plan → build & implement",
         "run": "run the last code block, show output",
         "preview": "open last HTML in the browser",
-        "grammar": "live: exactly-N output by construction (frontier miscounts)",
-        "samplers": "live: DRY/min_p/XTC steer the trajectory (frontier can't)",
-        "antislop": "live: ban a phrase, KV-rewind & resample",
-        "overlay": "live: per-token confidence overlay from logprobs",
-        "consistency": "live: self-consistency — consensus = confidence",
-        "escalate": "live: agreement routes escalation (not permissions)",
-        "bestof": "live: best-of-N, verifier-ranked (forks are cache hits)",
-        "thinkbudget": "live: cap reasoning at the token level (s1-style)",
+        "grammar": "exactly-N output by construction (/grammar [N])",
+        "samplers": "DRY/min_p/XTC steer the trajectory (/samplers [prompt])",
+        "antislop": "ban a phrase, KV-rewind & resample (/antislop [words | prompt])",
+        "overlay": "per-token confidence (/overlay [--tools] [prompt])",
+        "consistency": "consensus = confidence (/consistency [--tools|--semantic|--lexical] [prompt])",
+        "escalate": "agreement routes escalation (/escalate [--tools] [prompt])",
+        "bestof": "best-of-N, verifier-ranked (/bestof [--tools] [prompt])",
+        "thinkbudget": "cap reasoning at the token level (/thinkbudget [prompt])",
     }
 
     def _slash_catalog(self) -> list[tuple[str, str]]:
@@ -2678,7 +2678,7 @@ class HarnessApp(App):
         elif cmd in _ADVANTAGE_NAMES:
             self._blank = False
             self._follow = True
-            self.run_worker(self._advantage_worker(cmd), exclusive=False)
+            self.run_worker(self._advantage_worker(cmd, arg), exclusive=False)
         elif cmd in self._command_names():
             self.run_worker(self._run_custom_command(cmd, arg), exclusive=False)
         elif cmd in self._skill_names():
@@ -3348,10 +3348,11 @@ class HarnessApp(App):
         self.query_one(RichLog).write(render.plan_fork_panel(cands))
         self._stats_dirty = True
 
-    async def _advantage_worker(self, name: str) -> None:
+    async def _advantage_worker(self, name: str, arg: str = "") -> None:
         """Run one live advantage demo (/samplers, /overlay, …) against the
-        connected endpoint and write its panel to the transcript."""
-        from .advantages import ADVANTAGES
+        connected endpoint and write its panel to the transcript. Anything typed
+        after the command (`arg`) replaces that demo's built-in prompt."""
+        from .advantages import ADVANTAGES, TOOL_CAPABLE
 
         await self._caps_ready.wait()
         if self.client is None or self.caps is None:
@@ -3360,7 +3361,8 @@ class HarnessApp(App):
                 severity="warning",
             )
             return
-        self.notify(f"/{name}: running live on {self.client.model}…")
+        _on = f" · {arg[:40]}" if arg.strip() else ""
+        self.notify(f"/{name}: running live on {self.client.model}{_on}…")
         # Stream into the live region so the model types its output: a single stream
         # for the one-shot advantages (watch the grammar force out 39 sevens), or N
         # concurrent rollouts side-by-side for the fan-out ones (best-of-N, self-
@@ -3406,7 +3408,19 @@ class HarnessApp(App):
             token=token, fan=fan, fan_token=fan_token, fan_done=fan_done, reset=reset
         )
         try:
-            renderable = await ADVANTAGES[name](self.client, self.caps, live=live)
+            kw = {}
+            if name in TOOL_CAPABLE:
+                # `--tools` runs each sample through the real agent loop; build a
+                # fresh agent per rollout so they retrieve independently.
+                def _factory(on_token=None):
+                    a = self._build_agent()
+                    a.on_token = on_token
+                    return a
+
+                kw["agent_factory"] = _factory
+            renderable = await ADVANTAGES[name](
+                self.client, self.caps, live=live, arg=arg, **kw
+            )
         except Exception as e:  # noqa: BLE001 — surface any endpoint/runtime error to the user
             self.notify(f"/{name} error: {e}", severity="error")
             return
