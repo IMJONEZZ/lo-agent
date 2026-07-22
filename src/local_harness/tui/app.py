@@ -3594,7 +3594,18 @@ class HarnessApp(App):
                 and runs
                 and runs[-1].run_id != self.active
             ):
+                # Attaching to an already-finished run means the next message
+                # CONTINUES that conversation — say so, or the carried history
+                # reads as the model mysteriously knowing things.
+                resumed_old = self.active is None and runs[-1].status in (
+                    "completed", "failed")
                 self._set_active(runs[-1].run_id)
+                if resumed_old:
+                    self.notify(
+                        f"continuing “{runs[-1].label[:40]}” — your next message "
+                        "extends it (/new for a fresh chat)",
+                        timeout=8,
+                    )
             if self.active in self._run_ids:
                 table.move_cursor(row=self._run_ids.index(self.active))
         self._spin = (self._spin + 1) % len(SPINNER)
