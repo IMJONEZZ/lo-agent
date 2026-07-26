@@ -1,6 +1,7 @@
 """Starlette HTTP surface for the session server.
 
   GET    /                                           -> the web client (single-page app)
+  GET    /manifest.webmanifest, /icon.svg            -> add-to-home-screen assets
   POST   /session                 {task, preset?}   -> {run_id}
   POST   /session/plan             {task, n?}        -> {candidates: [{text, score}]}
   POST   /session/{id}/message     {content, preset?}-> {run_id}
@@ -27,12 +28,14 @@ from typing import Awaitable, Callable
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse
+from starlette.responses import (
+    HTMLResponse, JSONResponse, Response, StreamingResponse,
+)
 from starlette.routing import Route
 
 from ..events.bus import TERMINAL
 from .sessions import SessionManager
-from .webui import index_html
+from .webui import icon_svg, index_html, manifest_json
 
 
 def _sse(event_type: str, data: dict) -> str:
@@ -118,6 +121,13 @@ def create_server_app(
     async def index(request: Request):
         return HTMLResponse(index_html())
 
+    async def manifest(request: Request):
+        # served so "add to home screen" opens the client standalone on a phone
+        return Response(manifest_json(), media_type="application/manifest+json")
+
+    async def icon(request: Request):
+        return Response(icon_svg(), media_type="image/svg+xml")
+
     @asynccontextmanager
     async def lifespan(app):
         if on_startup is not None:
@@ -127,6 +137,8 @@ def create_server_app(
     return Starlette(
         routes=[
             Route("/", index, methods=["GET"]),
+            Route("/manifest.webmanifest", manifest, methods=["GET"]),
+            Route("/icon.svg", icon, methods=["GET"]),
             Route("/session", start_session, methods=["POST"]),
             Route("/session/plan", plan_route, methods=["POST"]),
             Route("/session/{run_id}/message", send_message, methods=["POST"]),

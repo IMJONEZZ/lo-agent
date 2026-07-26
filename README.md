@@ -255,6 +255,26 @@ lo tail --task "check CI"   # start + follow a session from another terminal
 lo daemon start             # keep `lo serve` running in a detached tmux
 ```
 
+### From your phone
+
+`GET /` is a full web client — the same sessions, live stream, interrupts and
+tool approvals the TUI has, in one dependency-free page. It's laid out
+phone-first: the session list is a swipe-away drawer that becomes a static
+sidebar at 760px, the composer rides above the on-screen keyboard, and reading
+scrollback while the model streams gets you a *↓ latest* pill instead of being
+yanked to the bottom. Backgrounding the tab drops the SSE stream — it
+reconnects and replays on return, and a reload puts you back in the session you
+were last in.
+
+```bash
+lo serve --host 0.0.0.0 --port 8099   # prints the LAN URL to type on the phone
+```
+
+The default `--host 127.0.0.1` bind isn't reachable from another device, so the
+banner says as much. Once it's open, *add to home screen* installs it standalone
+(no address bar) via `/manifest.webmanifest`. There's no auth in front of it —
+bind it wide only on a network you trust, or front it with a tunnel.
+
 ## Proxy
 
 ```bash

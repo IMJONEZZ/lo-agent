@@ -1091,6 +1091,44 @@ def _build_session_app(
     )
 
 
+_WILDCARD = ("0.0.0.0", "::", "")
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def _lan_ip() -> str | None:
+    """Best-effort primary LAN address. The UDP 'connect' only picks a route —
+    no packet is sent, and TEST-NET-1 is never contacted."""
+    import socket
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("192.0.2.1", 9))
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return None
+    return None if ip.startswith("127.") else ip
+
+
+def _serve_banner(host: str, port: int) -> list[str]:
+    """What to print when the session server comes up. The web client at / is
+    phone-shaped, but the default loopback bind isn't reachable from one — say
+    so, and hand over the LAN URL when the bind allows it."""
+    shown = "localhost" if host in _WILDCARD else host
+    lines = [f"lo serve: http://{shown}:{port}  (open it in a browser for the web client)"]
+    if host in _WILDCARD:
+        ip = _lan_ip() or "<this machine's LAN ip>"
+        lines.append(
+            f"  on your phone: http://{ip}:{port}  "
+            "— same wifi, then 'add to home screen'"
+        )
+    elif host in _LOOPBACK:
+        lines.append("  phone or tablet? re-run with --host 0.0.0.0 to reach it over the LAN")
+    return lines
+
+
 def cmd_serve(args) -> None:
     """Headless session server — the OpenCode-style bus over HTTP+SSE. Clients
     (the TUI, `lo tail`, a future web view) all observe one live session."""
@@ -1109,9 +1147,8 @@ def cmd_serve(args) -> None:
         sandbox,
         interactive_permissions=getattr(args, "approval", "auto") == "prompt",
     )
-    print(
-        f"lo serve: http://{args.host}:{args.port}  (open it in a browser for the web client)"
-    )
+    for line in _serve_banner(args.host, args.port):
+        print(line)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
@@ -1386,7 +1423,10 @@ def cmd_daemon(args) -> None:
             ],
             check=True,
         )
-        print(f"lo daemon started (tmux '{s}') → http://{args.host}:{args.port}")
+        shown = "localhost" if args.host in _WILDCARD else args.host
+        print(f"lo daemon started (tmux '{s}') → http://{shown}:{args.port}")
+        for line in _serve_banner(args.host, args.port)[1:]:
+            print(line)
         print(
             f"  attach: tmux attach -t {s}  ·  logs: lo daemon logs  ·  stop: lo daemon stop"
         )
