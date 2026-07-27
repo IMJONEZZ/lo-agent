@@ -27,8 +27,13 @@ def _css() -> str:
     return re.search(r"<style>(.*?)</style>", HTML, re.S).group(1)
 
 
+def _scripts() -> list[str]:
+    return re.findall(r"<script>(.*?)</script>", HTML, re.S)
+
+
 def _script() -> str:
-    return re.search(r"<script>(.*?)</script>", HTML, re.S).group(1)
+    """The app script. The first block is the pure markdown renderer."""
+    return _scripts()[1]
 
 
 def _rule(selector: str) -> str:
@@ -115,9 +120,114 @@ def test_the_script_parses():
     node = shutil.which("node")
     if node is None:
         pytest.skip("no node available to syntax-check the client")
-    r = subprocess.run([node, "--input-type=module", "--check"],
-                       input=_script(), capture_output=True, text=True)
+    for i, block in enumerate(_scripts()):
+        r = subprocess.run([node, "--input-type=module", "--check"],
+                           input=block, capture_output=True, text=True)
+        assert r.returncode == 0, f"script block {i}: {r.stderr}"
+
+
+# --- the markdown renderer ------------------------------------------------
+#
+# It's pure (no DOM, no app globals) precisely so it can be executed here: the
+# transcript renders model and tool output as markup, so escaping is a security
+# property, not a formatting preference.
+
+def _md(*sources: str) -> list[str]:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("no node available to run the markdown renderer")
+    src = _scripts()[0] + "\nprocess.stdout.write(JSON.stringify(%s.map(md)))" % (
+        json.dumps(list(sources)))
+    r = subprocess.run([node, "-e", src], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+def test_fenced_code_becomes_a_scrollable_block():
+    out, = _md("here:\n```python\nfor x in xs:\n    print(x)\n```")
+    assert '<pre class="code">' in out
+    assert "<code>for x in xs:\n    print(x)</code>" in out
+    assert "<p>here:</p>" in out
+    # the language labels the block; the button says what it does. (They were
+    # the same element once, so the chip reading "python" copied when tapped.)
+    assert '<span class="lang">python</span>' in out
+    assert '<button class="copy" type="button">copy</button>' in out
+
+
+def test_an_unterminated_fence_still_renders():
+    # the common case mid-stream: the closing ``` hasn't arrived yet
+    out, = _md("```js\nlet x = 1")
+    assert '<pre class="code">' in out and "let x = 1" in out
+
+
+def test_markup_in_model_output_is_escaped_everywhere():
+    para, code, item, quote = _md(
+        "<img src=x onerror=alert(1)>",
+        "```\n<script>alert(1)</script>\n```",
+        "- <b onclick=x>hi</b>",
+        "> <iframe src=evil>",
+    )
+    for out in (para, code, item, quote):
+        assert "&lt;" in out
+    assert "<img" not in para and "<script>" not in code
+    assert "<b onclick" not in item and "<iframe" not in quote
+
+
+def test_inline_code_bold_and_italic():
+    out, = _md("call `lens_grid()` for **bold** and *em*")
+    assert "<code>lens_grid()</code>" in out
+    assert "<b>bold</b>" in out and "<i>em</i>" in out
+
+
+def test_snake_case_is_not_italicised():
+    # why _italic_ is unsupported: identifiers are far more common than emphasis
+    out, = _md("see lens_render.py and _private_name in jlens_service")
+    assert "<i>" not in out and "lens_render.py" in out
+
+
+def test_only_http_links_become_anchors():
+    ok, bad, quoted = _md(
+        "[docs](https://example.com/a?b=1)",
+        "[x](javascript:alert(1))",
+        '[a" onmouseover=alert(1)](https://example.com)',
+    )
+    assert '<a href="https://example.com/a?b=1"' in ok
+    assert 'rel="noreferrer noopener"' in ok
+    assert "<a" not in bad                  # no javascript: hrefs, ever
+    assert 'onmouseover' not in quoted.split("</a>")[0].split(">")[0]
+    assert "&quot;" in quoted or '"' not in quoted.split('href="')[1].split('"')[0]
+
+
+def test_headings_lists_quotes_and_rules():
+    out, = _md("## Plan\n- one\n2) two\n\n> a note\n\n---\ntail")
+    assert '<div class="h">Plan</div>' in out
+    assert "<ul><li>one</li><li>two</li></ul>" in out
+    assert "<blockquote>a note</blockquote>" in out
+    assert "<hr>" in out and "<p>tail</p>" in out
+
+
+def test_code_blocks_scroll_sideways_instead_of_wrapping():
+    decls = _rule("pre.code")
+    assert "overflow-x:auto" in decls and "white-space:pre" in decls
+
+
+def test_the_streamed_answer_is_upgraded_not_reprinted():
+    js = _script()
+    # token deltas and the persisted model_call carry the same text; the row is
+    # replaced in place, so the answer isn't rendered twice
+    assert "liveEl||add(" in js and "row.innerHTML=md(c)" in js
+
+
+def test_long_tool_output_can_be_expanded():
+    js = _script()
+    assert "show all (" in js and "classList.toggle(\"open\")" in js
+    assert "const CUT=200" in js
+
+
+def test_copy_works_off_https():
+    # a phone hits this over http://192.168.x.x — navigator.clipboard is absent
+    js = _script()
+    assert "isSecureContext" in js and "execCommand" in js
 
 
 def test_manifest_is_installable():

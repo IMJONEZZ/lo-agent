@@ -115,6 +115,45 @@ _INDEX_HTML = """\
   .spawn { color:var(--jade); }
   .cursor::after { content:"▌"; color:var(--amber); }
 
+  /* ---- rendered markdown: the reason a long answer is readable on a phone ---- */
+  .row.md { position:relative; padding-left:1.5em; }
+  .row.md::before { content:"⏺"; position:absolute; left:0; }
+  .md p { margin:0 0 8px; }
+  .md p:last-child, .md ul:last-child, .md .cb:last-child { margin-bottom:0; }
+  .md ul { margin:4px 0 8px; padding-left:20px; }
+  .md li { margin:2px 0; }
+  .md .h { color:var(--jade); font-weight:bold; margin:10px 0 4px; }
+  .md blockquote { margin:6px 0; padding-left:10px; color:var(--grey);
+                   border-left:2px solid var(--border); }
+  .md hr { border:0; border-top:1px solid var(--border); margin:10px 0; }
+  .md a { color:var(--jade); }
+  /* inline code must not break mid-identifier the way prose does */
+  .md code { background:#16211d; border-radius:4px; padding:1px 4px;
+             color:var(--gold); overflow-wrap:normal; word-break:keep-all; }
+  /* a code block scrolls sideways in its own box — wrapping it at 390px turns
+     every line into an unreadable ribbon, and the page must never scroll */
+  .md .cb { margin:8px 0; border:1px solid #2c4139; border-radius:8px;
+            overflow:hidden; background:#16211d; }
+  .md .cbh { display:flex; align-items:center; justify-content:space-between;
+             gap:8px; padding:3px 5px 3px 10px; background:var(--panel);
+             border-bottom:1px solid #2c4139; }
+  .md .cbh .lang { color:var(--grey); font-size:12px; }
+  pre.code { margin:0; padding:10px 12px; white-space:pre;
+             overflow-x:auto; overscroll-behavior-x:contain;
+             -webkit-overflow-scrolling:touch; }
+  pre.code code { background:none; padding:0; font-size:13px; color:var(--cream);
+                  white-space:pre; }
+  /* not var(--tap): a 44px bar on top of every block eats a phone screen */
+  .copy { min-height:32px; padding:4px 12px; font-size:12px; font-weight:normal;
+          border-radius:6px; background:transparent; color:var(--jade);
+          border:1px solid var(--border); }
+  /* tool output: a tappable "show all" beats silently swallowing 40kB */
+  .more { min-height:26px; padding:2px 8px; margin-left:6px; font-size:12px;
+          font-weight:normal; border-radius:6px; background:transparent;
+          color:var(--jade); border:1px solid var(--border); }
+  .toolres.open .full { display:block; max-height:40vh; overflow:auto;
+                        overscroll-behavior:contain; margin-top:4px; }
+
   /* jump-back-to-live pill: reading scrollback shouldn't get yanked away */
   #jump { position:absolute; left:50%; transform:translateX(-50%); bottom:8px;
           display:none; z-index:10; background:var(--panel); color:var(--jade);
@@ -189,10 +228,73 @@ _INDEX_HTML = """\
   </div>
 </div>
 <script>
+/* --- markdown for the transcript -----------------------------------------
+   Deliberately pure: no DOM, no app globals, so the test suite can run it
+   under node. Everything model- or tool-authored reaches the output through
+   esc(); the one attribute ever emitted is an href matched against an http(s)
+   pattern that cannot contain a quote or an angle bracket, so there is no
+   path from generated text into markup. Kept small on purpose — headings,
+   lists, quotes, rules, fences, and inline code/bold/italic/links. */
+function esc(s){ return (s==null?"":String(s)).replace(/[&<>]/g,
+  c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+function mdInline(t){
+  // `code` first so formatting inside backticks stays literal. No _italic_:
+  // snake_case identifiers are far more common here than emphasis.
+  const re=/`([^`]+)`|\\*\\*([\\s\\S]+?)\\*\\*|\\*([^*\\n]+)\\*|\\[([^\\]\\n]+)\\]\\((https?:\\/\\/[^\\s)<>"']+)\\)/g;
+  let out="", last=0, m;
+  while((m=re.exec(t))!==null){
+    out+=esc(t.slice(last,m.index));
+    if(m[1]!==undefined) out+="<code>"+esc(m[1])+"</code>";
+    else if(m[2]!==undefined) out+="<b>"+mdInline(m[2])+"</b>";
+    else if(m[3]!==undefined) out+="<i>"+mdInline(m[3])+"</i>";
+    else out+='<a href="'+m[5]+'" target="_blank" rel="noreferrer noopener">'
+              +esc(m[4])+"</a>";
+    last=re.lastIndex;
+  }
+  return out+esc(t.slice(last));
+}
+
+function mdCode(body, lang){
+  const tag=/^[\\w+.#-]{1,20}$/.test(lang||"") ? lang : "";
+  return '<div class="cb"><div class="cbh"><span class="lang">'+esc(tag)
+       +'</span><button class="copy" type="button">copy</button></div>'
+       +'<pre class="code"><code>'+esc(body)+"</code></pre></div>";
+}
+
+function md(src){
+  const lines=String(src==null?"":src).replace(/\\r/g,"").split("\\n");
+  const out=[]; let para=[], i=0;
+  const flush=()=>{ if(para.length){ out.push("<p>"+mdInline(para.join("\\n"))+"</p>");
+                                     para=[]; } };
+  const bullet=/^\\s*([-*+]|\\d+[.)])\\s+/;
+  while(i<lines.length){
+    const l=lines[i], fence=l.match(/^\\s*```\\s*([^\\s`]*)\\s*$/);
+    if(fence){ flush(); const buf=[]; i++;
+      while(i<lines.length && !/^\\s*```/.test(lines[i])) buf.push(lines[i++]);
+      i++;                       // closing fence, or EOF mid-stream
+      out.push(mdCode(buf.join("\\n"), fence[1])); continue; }
+    const h=l.match(/^(#{1,4})\\s+(.+)$/);
+    if(h){ flush(); out.push('<div class="h">'+mdInline(h[2])+"</div>"); i++; continue; }
+    if(bullet.test(l)){ flush(); const items=[];
+      while(i<lines.length && bullet.test(lines[i]))
+        items.push("<li>"+mdInline(lines[i++].replace(bullet,""))+"</li>");
+      out.push("<ul>"+items.join("")+"</ul>"); continue; }
+    if(/^\\s*>\\s?/.test(l)){ flush(); const q=[];
+      while(i<lines.length && /^\\s*>\\s?/.test(lines[i]))
+        q.push(lines[i++].replace(/^\\s*>\\s?/,""));
+      out.push("<blockquote>"+mdInline(q.join("\\n"))+"</blockquote>"); continue; }
+    if(/^\\s*(-{3,}|\\*{3,}|_{3,})\\s*$/.test(l)){ flush(); out.push("<hr>"); i++; continue; }
+    if(!l.trim()){ flush(); i++; continue; }
+    para.push(l); i++;
+  }
+  flush(); return out.join("");
+}
+</script>
+<script>
 let active=null, es=null, liveEl=null, liveText=null, reasonEl=null, reasonText=null;
 let retry=null, backoff=1000, sessionsById={};
 const $=s=>document.querySelector(s), log=$("#log"), side=$("#side"), scrim=$("#scrim");
-const esc=s=>(s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 const near=()=>log.scrollHeight-log.scrollTop-log.clientHeight<80;
 function toEnd(){ log.scrollTop=log.scrollHeight; $("#jump").classList.remove("show"); }
 function settle(was){ if(was) toEnd(); else $("#jump").classList.add("show"); }
@@ -203,6 +305,46 @@ function stream(el, node, text){ const was=near(); node.appendData(text); settle
 function textRow(cls, prefix){ const d=add(cls, esc(prefix));
   const n=document.createTextNode(""); d.appendChild(n); return [d,n]; }
 function setStatus(t){ $("#status").textContent=t; }
+
+/* tool results are unbounded — show a readable head, keep the rest a tap away */
+const CUT=200;
+function toolRow(name, result){
+  const was=near(), d=add("toolres","  \\u21b3 "+esc(name)+" \\u2192 ");
+  const body=document.createElement("span"); body.className="full";
+  const head=result.slice(0,CUT);
+  body.textContent=result.length>CUT?head+"\\u2026":head;
+  d.appendChild(body);
+  if(result.length>CUT){
+    const b=document.createElement("button"); b.className="more"; b.type="button";
+    const shut="show all ("+result.length+")";
+    b.textContent=shut;
+    b.onclick=()=>{ const open=d.classList.toggle("open");
+      body.textContent=open?result:head+"\\u2026"; b.textContent=open?"less":shut; };
+    d.appendChild(b);
+  }
+  settle(was);
+}
+
+/* Copy on a code block. navigator.clipboard is gated to secure contexts, and
+   the phone reaches this over plain http on a LAN address — so the execCommand
+   fallback is the path that actually runs, not a legacy nicety. */
+function copyText(text, btn){
+  const label=btn.textContent, flash=()=>{ btn.textContent="copied";
+    setTimeout(()=>{ btn.textContent=label; },1200); };
+  if(window.isSecureContext && navigator.clipboard)
+    return navigator.clipboard.writeText(text).then(flash,()=>legacyCopy(text,flash));
+  legacyCopy(text,flash);
+}
+function legacyCopy(text, done){
+  const ta=document.createElement("textarea"); ta.value=text;
+  ta.style.cssText="position:fixed;top:0;left:0;opacity:0";
+  document.body.appendChild(ta); ta.focus(); ta.select();
+  try{ document.execCommand("copy"); done(); }catch(e){}
+  ta.remove();
+}
+log.addEventListener("click",e=>{ const b=e.target.closest&&e.target.closest(".copy");
+  if(!b) return; const code=b.closest(".cb").querySelector("code");
+  if(code) copyText(code.textContent, b); });
 
 /* ---- drawer ---- */
 function openDrawer(quiet){ side.classList.add("open"); scrim.classList.add("open");
@@ -249,12 +391,18 @@ function select(id, keep){
   on("token_delta",p=>{ if(!liveEl){ [liveEl,liveText]=textRow("answer cursor","\\u23fa ");
       liveEl.classList.add("cursor"); } stream(liveEl,liveText,p.text); });
   on("tool_progress",p=>{ setStatus(p.phase==="start"?("running "+p.name+"\\u2026"):"live"); });
-  on("model_call",p=>{ finishLive();
+  on("model_call",p=>{
     const m=((p.response||{}).choices||[{}])[0].message||{};
-    const c=(m.content||"").trim(); if(c) add("answer","\\u23fa "+esc(c));
-    (m.tool_calls||[]).forEach(tc=>add("tool","\\u2699 "+esc(tc.function.name)+"("+esc((tc.function.arguments||"").slice(0,80))+")"));
+    const c=(m.content||"").trim();
+    // The same answer arrives twice — once as live token deltas, then as the
+    // persisted call. Upgrade the streamed row in place (plain text while it
+    // streams, markdown once it's whole) instead of printing it again.
+    if(c){ const was=near(); const row=liveEl||add("answer","");
+           row.className="row answer md"; row.innerHTML=md(c); settle(was); }
+    finishLive();
+    (m.tool_calls||[]).forEach(tc=>add("tool","\\u2699 "+esc(tc.function.name)+"("+esc((tc.function.arguments||"").slice(0,120))+")"));
   });
-  on("tool_call",p=>add("toolres","  \\u21b3 "+esc(p.name)+" \\u2192 "+esc((p.result||"").slice(0,200))));
+  on("tool_call",p=>toolRow(p.name,p.result||""));
   on("agent_spawned",p=>add("spawn","\\u2442 spawned worker "+p.child_run_id.slice(0,8)+": "+esc(p.task)));
   on("notice",p=>add("note","\\u26a0 "+esc(p.message)));
   on("permission_request",p=>showPerm(p));

@@ -266,6 +266,14 @@ yanked to the bottom. Backgrounding the tab drops the SSE stream — it
 reconnects and replays on return, and a reload puts you back in the session you
 were last in.
 
+Answers stream as plain text, then render as markdown once the turn completes:
+headings, lists, quotes, inline code, and fenced blocks that scroll sideways in
+their own box with a copy button (which falls back to `execCommand` — the
+clipboard API is unavailable over plain http on a LAN address). Long tool
+results are cut with a *show all* toggle rather than swallowed. Everything the
+model or a tool emits is escaped on the way in; the only attribute the renderer
+ever writes is an `http(s)` href.
+
 ```bash
 lo serve --host 0.0.0.0 --port 8099   # prints the LAN URL to type on the phone
 ```
