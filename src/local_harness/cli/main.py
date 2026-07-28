@@ -5,14 +5,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
+import sqlite3
 import sys
 
 import httpx
 
 from ..agent.loop import Agent
 from ..agent.tools import ToolRegistry, builtin_tools
-from ..events.log import EventLog, MODEL_CALL, POLICY_TRIGGERED
+from ..events.log import EventLog, MODEL_CALL, POLICY_TRIGGERED, explain_db_error
 from ..events.replay import replay_run
 from ..inference.capabilities import probe
 from ..inference.client import OpenAICompatClient
@@ -504,6 +506,14 @@ def cmd_tui(args) -> None:
 
     client = OpenAICompatClient(args.url, args.model)
 
+    # Open the event log here, before Textual takes the terminal: a db that can't
+    # be read is worth a plain sentence on stderr, not a crash dump painted over
+    # a half-drawn TUI.
+    try:
+        EventLog(args.db).close()
+    except sqlite3.Error as e:
+        raise SystemExit(f"✗ {explain_db_error(e, args.db)}")
+
     # By default the TUI is a CLIENT of a headless session server: if --server
     # wasn't given and --in-process wasn't requested, start one embedded on
     # localhost and connect to it. The same args.db backs both, so the TUI shares
@@ -708,12 +718,33 @@ async def cmd_doctor(args) -> None:
     try:
         log = EventLog(args.db)
         n = len(log.runs())
+        mode = log.journal_mode
         log.close()
         report(True, "event log",
-               f"{args.db} writable · {n} runs · sqlite {sqlite3.sqlite_version}")
+               f"{log.path} writable · {n} runs · journal {mode} · "
+               f"sqlite {sqlite3.sqlite_version}")
+        if mode.lower() != "wal":
+            # Not fatal — but it means the fs refused WAL, which is the same
+            # condition that used to show up as "disk I/O error" mid-session.
+            report(False, "event log journal",
+                   f"{mode} (not WAL) — this filesystem can't host SQLite's "
+                   "shared-memory index",
+                   "the db is probably on a network or synced volume; move it to "
+                   "a local disk with `lo config set db ~/.lo/lo.db`",
+                   required=False)
     except Exception as e:
-        report(False, "event log", f"{args.db}: {e}",
-               "check the path is writable (--db / LO_DB / `lo config set db`)")
+        if isinstance(e, sqlite3.Error):  # keep the explanation aligned under ↳
+            fix = "\n      ".join(explain_db_error(e, args.db).splitlines()[1:])
+        else:
+            fix = "check the path is writable (--db / LO_DB / `lo config set db`)"
+        report(False, "event log", f"{args.db}: {e}", fix)
+
+    from .. import debuglog
+
+    path = debuglog.log_path()
+    report(path.exists(), "debug log", str(path),
+           "runs once you've used lo with logging on (LO_LOG_LEVEL=off disables "
+           "it) — attach it to bug reports", required=False)
 
     kvm = Path("/dev/kvm").exists()
     msb = bool(shutil.which("msb"))
@@ -1924,7 +1955,10 @@ _HANDLERS = {
 
 
 def main() -> None:
+    from .. import debuglog
+
     args = build_parser().parse_args()
+    debuglog.setup(args.command)
     handler = _HANDLERS[args.command]
     try:
         if asyncio.iscoroutinefunction(handler):
@@ -1948,6 +1982,11 @@ def main() -> None:
             f"✗ can't reach {url} — is the server running? "
             "Check --url / LO_BASE_URL."
         )
+    except sqlite3.Error as e:
+        # Every command opens the event log; a broken one should read as a
+        # sentence about which file and why, not as a traceback.
+        logging.getLogger("lo").error("event log failure", exc_info=e)
+        raise SystemExit(f"✗ {explain_db_error(e, getattr(args, 'db', 'lo.db'))}")
     except httpx.HTTPError as e:
         raise SystemExit(f"✗ server error: {type(e).__name__}: {e}")
 

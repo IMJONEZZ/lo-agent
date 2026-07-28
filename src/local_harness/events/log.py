@@ -9,12 +9,15 @@ Rows are never updated or deleted; run status lives in its own table.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+
+logger = logging.getLogger("lo.events")
 
 # Event types
 RUN_STARTED = "run_started"
@@ -29,6 +32,17 @@ CONTEXT_COMPACTED = "context_compacted"  # payload: {method, before_tokens, afte
 MESSAGE_SNIPPED = "message_snipped"  # payload: {seq} — collapse that event's content in future context (lossless)
 AGENT_SPAWNED = "agent_spawned"      # payload: {child_run_id, task} — a worker the lead fanned out (Coordinator)
 JLENS_INTERVENTION = "jlens_intervention"  # payload: {specs, lens_hash, target} — a J-space edit set (Rung 6; replayable)
+
+
+def _resolve(path: str | Path) -> str:
+    """Absolute path for the db file. The default `--db lo.db` is relative, and
+    several connections are opened over a session's lifetime (agents, background
+    cycles, the embedded server) — if anything changes the process's cwd in
+    between, a relative path would silently split the log across two files."""
+    p = str(path)
+    if p == ":memory:" or p.startswith("file:"):  # in-memory / URI forms pass through
+        return p
+    return str(Path(p).expanduser().absolute())
 
 
 @dataclass
@@ -56,7 +70,7 @@ class RunMeta:
 
 class EventLog:
     def __init__(self, path: str | Path):
-        self.path = str(path)
+        self.path = _resolve(path)
         # Listeners are called with each persisted Event right after commit — the
         # EventBus registers one to broadcast persisted events to live SSE
         # subscribers, so the agent loop needs no bus awareness: it just writes
@@ -67,7 +81,10 @@ class EventLog:
         # Each connection is still touched by a single thread after creation, so
         # this is safe; WAL handles the separate TUI-thread reader connection.
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL")
+        # A second connection mid-checkpoint should wait, not raise: the TUI polls
+        # this db 10×/s while the embedded server writes to it.
+        self._conn.execute("PRAGMA busy_timeout=5000")
+        self.journal_mode = self._pick_journal_mode()
         self._conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS runs (
@@ -91,6 +108,33 @@ class EventLog:
         if "title" not in cols:
             self._conn.execute("ALTER TABLE runs ADD COLUMN title TEXT")
         self._conn.commit()
+        logger.debug("opened %s (journal_mode=%s)", self.path, self.journal_mode)
+
+    def _pick_journal_mode(self) -> str:
+        """WAL where the filesystem can support it; the rollback journal where it
+        can't.
+
+        WAL needs a shared-memory (-shm) sibling file, which network and some FUSE
+        mounts (SMB, NFS, sshfs) and a few container volume drivers cannot provide.
+        `PRAGMA journal_mode=WAL` still reports success on those, and the failure
+        only lands on the first *read* as SQLITE_IOERR ("disk I/O error") — which
+        used to surface as a traceback out of the TUI's poll loop, long after the
+        db was opened. So probe here, while we can still choose: DELETE mode is
+        slower and single-writer, but it works on any filesystem.
+        """
+        try:
+            mode = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+            # The first read transaction is what actually creates/maps the -shm.
+            self._conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            return str(mode)
+        except sqlite3.Error as e:
+            logger.warning(
+                "WAL unavailable for %s (%s) — falling back to the rollback journal; "
+                "the db is probably on a network or synced volume",
+                self.path, e,
+            )
+            mode = self._conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+            return str(mode)
 
     def create_run(self, task: str) -> str:
         run_id = uuid.uuid4().hex[:12]
@@ -239,3 +283,52 @@ class EventLog:
 
     def close(self) -> None:
         self._conn.close()
+
+
+# Cause → what to actually do about it. Matched against the sqlite message, most
+# specific first; every explanation names the db path and the log so a bug report
+# arrives with both.
+_DB_HINTS: list[tuple[str, str]] = [
+    ("disk i/o error",
+     "the filesystem holding the event log can't complete reads or writes. Usually one of:\n"
+     "  · the db sits on a network or synced volume (SMB/NFS/sshfs, iCloud/Dropbox) —\n"
+     "    SQLite can't keep its write-ahead log there; put it on a local disk\n"
+     "  · the disk is full (the log needs room for its -wal/-shm siblings)\n"
+     "  · a previous `sudo lo …` left lo.db-wal / lo.db-shm owned by root — delete them\n"
+     "  · the process is out of file descriptors (`ulimit -n`)"),
+    ("unable to open database file",
+     "the path can't be opened — check the directory exists and is writable\n"
+     "  (a URL or a directory here instead of a file path is the usual cause)"),
+    ("file is not a database",
+     "that path isn't a SQLite file — point --db somewhere else"),
+    ("readonly database",
+     "the file is read-only for this user — check its ownership and permissions"),
+    ("database is locked",
+     "another process is holding the db (a `lo serve`, another TUI, a stuck run)"),
+    ("database disk image is malformed",
+     "the db is corrupt — move it aside; history is lost but nothing else breaks"),
+]
+
+
+def explain_db_error(exc: BaseException, path: str | Path) -> str:
+    """Turn a sqlite failure on the event log into something a user can act on.
+
+    The raw `OperationalError: disk I/O error` says nothing about which file, on
+    whose disk, or what to do — and it reaches people as a Textual crash dump.
+    """
+    from .. import debuglog
+
+    text = str(exc).lower()
+    hint = next((h for needle, h in _DB_HINTS if needle in text), None)
+    lines = [
+        f"event log unavailable: {type(exc).__name__}: {exc}",
+        f"  db: {_resolve(path)}",
+    ]
+    if str(path) != _resolve(path):  # a relative --db resolves elsewhere than it reads
+        lines.append(f"      (from --db {path!r})")
+    if hint:
+        lines.append(f"  {hint}")
+    lines.append("  run `lo doctor` to check the path, or move the log with")
+    lines.append("    lo config set db ~/.lo/lo.db   (also --db / LO_DB)")
+    lines.append(f"  details in {debuglog.log_path()}")
+    return "\n".join(lines)

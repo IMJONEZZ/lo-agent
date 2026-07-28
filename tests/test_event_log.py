@@ -104,3 +104,55 @@ def test_rewind_archives_tail_and_truncates(tmp_path):
 
     # rewinding past the end is a no-op
     assert log.rewind(rid, 999) is None
+
+
+def test_relative_db_path_survives_a_chdir(tmp_path, monkeypatch):
+    # Connections are opened over a session's lifetime (agents, background cycles,
+    # the embedded server). A relative --db must keep meaning the same file.
+    monkeypatch.chdir(tmp_path)
+    log = EventLog("lo.db")
+    rid = log.create_run("task")
+    assert log.path == str(tmp_path / "lo.db")
+
+    monkeypatch.chdir(tmp_path.parent)
+    assert [r.run_id for r in EventLog(log.path).runs()] == [rid]
+
+
+def test_falls_back_when_the_filesystem_refuses_wal(tmp_path, monkeypatch):
+    # Network/FUSE mounts accept `journal_mode=WAL` and then fail the first read
+    # with SQLITE_IOERR — the "disk I/O error" that used to crash the TUI mid-poll.
+    import sqlite3
+
+    class NoShm:  # a connection whose first WAL read can't map the -shm file
+        def __init__(self, conn):
+            self._c, self._tripped = conn, False
+
+        def execute(self, sql, *a):
+            if sql == "SELECT count(*) FROM sqlite_master" and not self._tripped:
+                self._tripped = True
+                raise sqlite3.OperationalError("disk I/O error")
+            return self._c.execute(sql, *a)
+
+        def __getattr__(self, name):
+            return getattr(self._c, name)
+
+    real_connect = sqlite3.connect
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: NoShm(real_connect(*a, **k)))
+    log = EventLog(tmp_path / "e.db")
+    assert log.journal_mode.lower() == "delete"  # degraded, not dead
+    rid = log.create_run("task")                 # …and still a working event log
+    log.append(rid, MODEL_CALL, {"call_index": 0})
+    assert len(log.events(rid)) == 2
+
+
+def test_explain_db_error_names_the_file_and_the_likely_cause():
+    import sqlite3
+    from local_harness.events.log import explain_db_error
+
+    msg = explain_db_error(sqlite3.OperationalError("disk I/O error"), "/Volumes/box/lo.db")
+    assert "/Volumes/box/lo.db" in msg
+    assert "network" in msg and "disk is full" in msg
+    assert "lo doctor" in msg and "logs/lo.log" in msg
+
+    other = explain_db_error(sqlite3.OperationalError("unable to open database file"), "x.db")
+    assert "directory exists and is writable" in other

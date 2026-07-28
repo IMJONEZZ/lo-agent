@@ -362,6 +362,17 @@ lo completion bash           # tab completion — eval "$(lo completion bash)" (
 lo --version
 ```
 
+Every command writes a rotating debug log to `~/.lo/logs/lo.log` (version, platform,
+sqlite build, event-log path and journal mode, plus any error we caught and
+explained). It's the file to attach to a bug report — the TUI owns the terminal, so
+that's where diagnostics go instead of stderr. `LO_LOG_LEVEL=warning` quiets it,
+`LO_LOG_LEVEL=off` disables it, `LO_LOG_DIR` moves it.
+
+The event log wants a local disk. On a network or synced volume (SMB/NFS/sshfs,
+iCloud/Dropbox) SQLite can't host its write-ahead index; lo detects that at open
+time and falls back to the slower rollback journal, and `lo doctor` says so. Move it
+with `lo config set db ~/.lo/lo.db` if you'd rather keep WAL.
+
 ## Layout
 
 ```

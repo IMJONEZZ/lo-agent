@@ -201,6 +201,7 @@ def _bare_app(effort="medium"):
     a._preset = get_preset("build")
     a.client = OpenAICompatClient("http://x", "m", transport=MockLlamaCpp().transport())
     a.db_path = ":memory:"
+    a.event_log = tui_app.EventLog(a.db_path)  # shared by the app (see on_mount)
     a.caps = Capabilities()
     a.max_steps = 5
     a.context_budget = None

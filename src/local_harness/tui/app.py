@@ -21,7 +21,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import logging
 import os
+import sqlite3
 import time
 
 from rich.console import Group
@@ -58,6 +60,7 @@ from ..events.log import (
     TOOL_CALL,
     USER_MESSAGE,
     EventLog,
+    explain_db_error,
 )
 from ..events.replay import replay_run
 from ..inference.capabilities import Capabilities, probe
@@ -80,6 +83,8 @@ from .render import (
 )
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+logger = logging.getLogger("lo.tui")
 
 
 def _theme_from_palette(p: render.Palette) -> Theme:
@@ -678,6 +683,8 @@ class HarnessApp(App):
         self._runs_state: list[tuple] | None = []  # None forces a table rebuild
         self._run_ids: list[str] = []
         self._runs_filter = ""  # history sidebar filter ('/' with the table focused)
+        self._db_errors = 0  # consecutive failed event-log polls (see _on_db_error)
+        self._status_before_db_error: str | None = None
         self._status_base: str | None = None
         self._spin = 0
         self._welcomed = False
@@ -772,7 +779,13 @@ class HarnessApp(App):
             register_file_presets()
         except Exception:
             pass
+        # One connection for the whole app: agents, the background cycle and the
+        # poll loop all share it (they all run on this event loop's thread). A
+        # connection per turn leaked file descriptors, and running out of those is
+        # itself one of the ways SQLite starts reporting disk I/O errors.
         self.event_log = EventLog(self.db_path)
+        logger.info("event log %s (journal_mode=%s)",
+                    self.event_log.path, self.event_log.journal_mode)
         table = self.query_one(DataTable)
         table.cursor_type = "row"
         table.add_columns("run", "status", "task")
@@ -1403,7 +1416,7 @@ class HarnessApp(App):
         return Agent(
             self.client,
             tools,
-            EventLog(self.db_path),
+            self.event_log,  # one connection per process — see on_mount
             capabilities=self.caps,
             system_prompt=system_prompt,
             sampling=preset.sampling,
@@ -1460,7 +1473,7 @@ class HarnessApp(App):
             from ..background.consolidate import consolidate
 
             n = await consolidate(
-                EventLog(self.db_path), self._memory, self.client, limit=2
+                self.event_log, self._memory, self.client, limit=2
             )
             if n:
                 self._stats_dirty = True
@@ -1484,7 +1497,7 @@ class HarnessApp(App):
         self._cycle_running = True
         try:
             counts = await background_cycle(
-                EventLog(self.db_path),
+                self.event_log,
                 self._memory,
                 self.client,
                 Path(self.memory_dir) / "drafts",
@@ -2747,7 +2760,7 @@ class HarnessApp(App):
         await self._caps_ready.wait()
         from ..skills.exec import generate_with_skill
 
-        log = EventLog(self.db_path)
+        log = self.event_log
         rid = log.create_run(f"/{name} {prompt}".strip())
         t0 = time.monotonic()
         try:
@@ -3574,7 +3587,42 @@ class HarnessApp(App):
             chat.scroll_end(animate=False)
 
     def _tick(self) -> None:
+        """The 10×/s poll. It reads the event log, so it is where a failing db
+        surfaces — and it must not take the session down with it: the user's
+        transcript is still on screen, and quitting cleanly beats a crash dump."""
+        try:
+            self._poll()
+        except sqlite3.Error as e:
+            self._on_db_error(e)
+
+    def _on_db_error(self, exc: BaseException) -> None:
+        self._db_errors += 1
+        logger.warning("event log read failed (%d in a row)", self._db_errors,
+                       exc_info=exc)
+        if self._db_errors == 1:  # explain once, in full, where it can be read
+            self._status_before_db_error = self._status_base
+            explain = explain_db_error(exc, self.db_path)
+            try:
+                self.query_one(RichLog).write(
+                    Panel(Text(explain, style=render.C_ERR),
+                          title="event log error", title_align="left",
+                          border_style=render.B_ERR, padding=(0, 1))
+                )
+            except Exception:  # noqa: BLE001 — the screen may not be mounted yet
+                pass
+            self.notify(explain.splitlines()[0], severity="error", timeout=30)
+        elif self._db_errors % 600 == 0:  # ~every minute while it stays broken
+            self.notify("event log still unreadable — see the message above",
+                        severity="error", timeout=10)
+        self._status_base = "⚠ event log unreadable — history and new turns can't be saved"
+
+    def _poll(self) -> None:
         runs = self.event_log.runs()
+        if self._db_errors:  # recovered (a full disk freed, a mount came back)
+            logger.info("event log readable again after %d failures", self._db_errors)
+            self.notify("event log readable again", timeout=5)
+            self._db_errors = 0
+            self._status_base = self._status_before_db_error  # model · tier line back
         state = [(r.run_id, r.status, r.label) for r in runs]
         if state != self._runs_state:
             self._runs_state = state

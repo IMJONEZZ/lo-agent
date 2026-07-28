@@ -514,3 +514,34 @@ async def test_interrupt_marks_running_run_failed(tmp_path):
         await pilot.pause()
         assert w.cancelled                              # the in-process worker was cancelled
         assert any(e.type == RUN_FAILED for e in app.event_log.events(rid))  # marked failed → rewindable
+
+
+async def test_db_failure_explains_itself_instead_of_crashing_the_tui(tmp_path):
+    # The 10×/s poll is where a failing event log surfaces (the reported
+    # "OperationalError: disk I/O error" traceback out of _tick). It must degrade
+    # into an explanation the user can act on, and recover if the db comes back.
+    import sqlite3
+
+    db = str(tmp_path / "h.db")
+    app = make_app(db, MockLlamaCpp(script={424242: chat_response(content="p")}))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        notices: list[str] = []
+        app.notify = lambda msg, **k: notices.append(msg)
+        broken = True
+        real_runs = app.event_log.runs
+        app.event_log.runs = lambda: (_ for _ in ()).throw(
+            sqlite3.OperationalError("disk I/O error")) if broken else real_runs()
+
+        app._tick()
+        app._tick()
+        assert app._db_errors == 2                       # still ticking, not dead
+        assert notices and "disk I/O error" in notices[0]
+        assert "event log unreadable" in (app._status_base or "")
+        was = app._status_before_db_error
+
+        broken = False                                   # the mount/disk came back
+        app._tick()
+        assert app._db_errors == 0
+        assert app._status_base == was                   # the model · tier line is back
+        assert app.is_running                            # the session survived

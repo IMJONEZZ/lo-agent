@@ -137,6 +137,7 @@ async def test_auto_consolidate_writes_one_episode(tmp_path):
 
     app = HarnessApp.__new__(HarnessApp)
     app.db_path = db
+    app.event_log = log  # the app shares one connection (see HarnessApp.on_mount)
     app._memory = mem
     app.client = client
     app._stats_dirty = False
