@@ -42,7 +42,8 @@ demos/jlens/*.cast
 *.png
 
 # Documentation and planning (not needed for install/function)
-docs/
+docs/*
+!docs/software-testing/
 thoughts/
 profiles/
 local_llm_advantages_plan.md
