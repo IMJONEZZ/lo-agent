@@ -379,3 +379,109 @@ async def test_max_steps_still_fails_if_the_model_keeps_calling(tmp_path):
     assert result.status == "max_steps"
     assert any(m.get("content") == FINAL_STEP_NOTE
                for m in mock.chat_bodies[-1]["messages"])
+
+
+def _tool_turn(i: int) -> dict:
+    return chat_response(tool_calls=[(f"c{i}", "calculator", '{"expression": "1+1"}')])
+
+
+def _noted_calls(log: EventLog, run_id: str) -> list[int]:
+    """call_index of the model call each final-step note was sent with."""
+    from local_harness.events.log import USER_MESSAGE
+
+    events = log.events(run_id)
+    return [next(e.payload["call_index"] for e in events[i:] if e.type == MODEL_CALL)
+            for i, ev in enumerate(events)
+            if ev.type == USER_MESSAGE and ev.payload.get("source") == "harness"]
+
+
+async def test_step_budget_counts_from_each_turns_start(tmp_path):
+    """The step budget is per turn. It used to count every model call in the
+    conversation, so once a chat had made max_steps calls in total, every later
+    message failed at once with "max_steps exceeded"."""
+    from local_harness.agent.loop import FINAL_STEP_NOTE
+    from local_harness.events.log import USER_MESSAGE
+
+    script = {1: _tool_turn(1), 2: chat_response(content="first"),
+              3: _tool_turn(3), 4: chat_response(content="second"),
+              5: chat_response(content="third")}
+    log = EventLog(tmp_path / "e.db")
+    agent = make_agent(MockLlamaCpp(script=script), log)
+    agent.max_steps = 2
+    r1 = await agent.run("q1")
+    r2 = await agent.continue_run(r1.run_id, "q2")
+    r3 = await agent.continue_run(r1.run_id, "q3")
+
+    assert [r.status for r in (r1, r2, r3)] == ["completed"] * 3
+    assert [r.answer for r in (r1, r2, r3)] == ["first", "second", "third"]
+    # seeds stay cumulative over the conversation (replay depends on them)
+    calls = log.events(r1.run_id, type=MODEL_CALL)
+    assert [c.payload["seed"] for c in calls] == [1, 2, 3, 4, 5]
+    # the note lands on each turn's own last budgeted call: call_index 1 and 3
+    assert _noted_calls(log, r1.run_id) == [1, 3]
+    sources = [(e.payload.get("source"), e.payload["content"])
+               for e in log.events(r1.run_id, type=USER_MESSAGE)]
+    assert sources == [("harness", FINAL_STEP_NOTE), ("user", "q2"),
+                       ("harness", FINAL_STEP_NOTE), ("user", "q3")]
+
+
+async def test_resume_keeps_the_interrupted_turns_budget(tmp_path):
+    """A crash mid-turn resumes with what that turn had left, counted from the
+    turn's first call: not from the resume point, and not from the start of
+    the conversation."""
+    script = {1: chat_response(content="first"),
+              2: _tool_turn(2), 3: _tool_turn(3), 4: chat_response(content="second")}
+    log = EventLog(tmp_path / "e.db")
+    r1 = await make_agent(MockLlamaCpp(script=script), log).run("q1")
+
+    crashing = make_agent(MockLlamaCpp(script=script, fail_after=1), log)
+    crashing.max_steps = 3
+    with pytest.raises(httpx.ConnectError):  # turn 2: seed 2 runs, seed 3 crashes
+        await crashing.continue_run(r1.run_id, "q2")
+
+    resumed = make_agent(MockLlamaCpp(script=script), log)
+    resumed.max_steps = 3
+    result = await resumed.resume(r1.run_id)
+
+    assert result.status == "completed" and result.answer == "second"
+    # turn 2 began at call_index 1, so its third and last budgeted call is call_index 3
+    assert _noted_calls(log, r1.run_id) == [3]
+
+
+def test_turn_start_skips_messages_that_dont_open_a_turn(tmp_path):
+    from local_harness.agent.loop import _turn_start
+    from local_harness.events.log import USER_MESSAGE
+
+    log = EventLog(tmp_path / "e.db")
+    rid = log.create_run("task")
+
+    def call(i):
+        log.append(rid, MODEL_CALL, {"call_index": i, "response": chat_response(content="x")})
+
+    call(0)
+    assert _turn_start(log.events(rid)) == 0  # still the task's own turn
+    log.append(rid, USER_MESSAGE, {"content": "follow-up", "source": "user"})
+    call(1)
+    log.append(rid, USER_MESSAGE, {"content": "[message from agent ab] hi", "source": "peer"})
+    call(2)
+    log.append(rid, USER_MESSAGE, {"content": "final note", "source": "harness"})
+    call(3)
+    assert _turn_start(log.events(rid)) == 1  # peer and harness messages arrive mid-turn
+    log.append(rid, USER_MESSAGE, {"content": "a follow-up from an older log"})  # no source
+    call(4)
+    assert _turn_start(log.events(rid)) == 4
+    log.append(rid, USER_MESSAGE, {"content": "next goal round", "source": "goal"})
+    assert _turn_start(log.events(rid)) == 5
+
+
+async def test_peer_messages_are_tagged_as_peer(tmp_path):
+    from local_harness.events.log import USER_MESSAGE
+
+    log = EventLog(tmp_path / "e.db")
+    agent = make_agent(MockLlamaCpp(script={1: chat_response(content="ack")}), log)
+    box = ["[message from agent ab] found it"]
+    agent.inbox = lambda: ([box.pop(0)] if box else [])
+    result = await agent.run("do a thing")
+    tagged = [(e.payload["content"], e.payload.get("source"))
+              for e in log.events(result.run_id, type=USER_MESSAGE)]
+    assert tagged == [("[message from agent ab] found it", "peer")]

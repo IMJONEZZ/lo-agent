@@ -147,8 +147,12 @@ def harness_system_block(caps) -> str:
     return "\n".join(lines)
 
 
-# Injected as a user turn before the model's last budgeted call, so the run
-# ends with an answer instead of a tool call whose result nobody will see.
+# Injected as a user turn before the model's last budgeted call of a turn, so
+# the turn ends with an answer instead of a tool call whose result nobody will
+# see. The budget (max_steps) counts from each turn's first model call, not from
+# the start of the conversation: a long chat gets a full budget for every new
+# message. Agent.final_step_note holds the text, so a caller that drives several
+# turns toward one aim (the session server's goal rounds) can say something else.
 FINAL_STEP_NOTE = (
     "This is your FINAL turn — the step budget is exhausted after this reply. "
     "Do not call tools. Reply now with your best final answer from what you "
@@ -157,6 +161,26 @@ FINAL_STEP_NOTE = (
 
 
 import json as _json
+
+# USER_MESSAGE `source` values. A turn opens with a message from the user (or,
+# for a goal round, from the session server's goal loop); the harness's final-step
+# note and peer messages from other agents arrive mid-turn and don't open one.
+# Logs written before sources existed have no `source`: those messages count as
+# turn openers, which is what a user's follow-up always was.
+TURN_SOURCES = (None, "user", "goal")
+
+
+def _turn_start(events) -> int:
+    """The call_index at which the latest turn began: the model calls logged
+    before its opening user message. 0 when the run's task is still the latest
+    turn. resume() uses it so a crash mid-turn keeps that turn's remaining budget."""
+    call_index = start = 0
+    for event in events:
+        if event.type == MODEL_CALL:
+            call_index = event.payload["call_index"] + 1
+        elif event.type == USER_MESSAGE and event.payload.get("source") in TURN_SOURCES:
+            start = call_index
+    return start
 
 
 def _sanitize_history_message(msg: Message) -> Message:
@@ -237,7 +261,8 @@ class Agent:
         self.self_knowledge = self_knowledge
         self.sampling = sampling or SamplingParams(temperature=0.2)  # no token cap by default
         self.base_seed = base_seed
-        self.max_steps = max_steps
+        self.max_steps = max_steps  # model calls per turn, counted from the turn's first call
+        self.final_step_note = FINAL_STEP_NOTE  # sent before a turn's last budgeted call
         self.policy = policy
         self.guardrails_factory = guardrails_factory
         # Auto-compaction trigger. An explicit context_budget wins; otherwise lock
@@ -376,16 +401,21 @@ class Agent:
             messages.append(await self._execute_tool(run_id, tc))
             if guardrails is not None:
                 guardrails.steps.record([tc.name])
-        return await self._loop(run_id, messages, call_index, guardrails)
+        # The interrupted turn keeps the budget it had left, counted from its start.
+        return await self._loop(run_id, messages, call_index, guardrails,
+                                turn_start=_turn_start(self.log.events(run_id)))
 
-    async def continue_run(self, run_id: str, message: str) -> AgentResult:
+    async def continue_run(self, run_id: str, message: str,
+                           source: str = "user") -> AgentResult:
         """Continue a finished (or interrupted) run with a new user turn — the
-        same run_id, so the conversation and its full event history carry on."""
+        same run_id, so the conversation and its full event history carry on.
+        The new turn gets the full step budget. `source` records who sent the
+        message: "user", or "goal" for a round started by the goal loop."""
         meta = self.log.run(run_id)
         if meta is None:
             raise ValueError(f"unknown run: {run_id}")
         self.log.reopen(run_id)
-        self.log.append(run_id, USER_MESSAGE, {"content": message})
+        self.log.append(run_id, USER_MESSAGE, {"content": message, "source": source})
         messages, call_index, pending = self._reconstruct(run_id, meta.task)
         self._replay_repl(run_id)  # rebuild persistent REPL state after a restart
         guardrails = self.guardrails_factory() if self.guardrails_factory else None
@@ -426,21 +456,29 @@ class Agent:
         messages: list[Message],
         call_index: int,
         guardrails: Guardrails | None = None,
+        turn_start: int | None = None,
     ) -> AgentResult:
+        # call_index stays cumulative over the whole conversation (it sets each
+        # call's seed, and _reconstruct rebuilds it from the log); the step budget
+        # counts only this turn's calls, from turn_start.
+        if turn_start is None:
+            turn_start = call_index
         try:
-            while call_index < self.max_steps:
+            while call_index - turn_start < self.max_steps:
                 if self.inbox is not None:  # Coordinator: inject any peer messages
                     for msg in self.inbox():
                         messages.append(Message(role="user", content=msg))
-                        self.log.append(run_id, USER_MESSAGE, {"content": msg})
+                        self.log.append(run_id, USER_MESSAGE, {"content": msg,
+                                                               "source": "peer"})
                 if (self.context_budget is not None
                         and estimate_tokens(messages) > self.context_budget):
                     messages = await self._compact(run_id, messages)
-                if call_index == self.max_steps - 1:
+                if call_index - turn_start == self.max_steps - 1:
                     # Same shape as an inbox injection, so resume/replay
                     # reconstruction stays faithful.
-                    messages.append(Message(role="user", content=FINAL_STEP_NOTE))
-                    self.log.append(run_id, USER_MESSAGE, {"content": FINAL_STEP_NOTE,
+                    note = self.final_step_note
+                    messages.append(Message(role="user", content=note))
+                    self.log.append(run_id, USER_MESSAGE, {"content": note,
                                                            "source": "harness"})
                 response, call_index = await self._model_call(run_id, messages, call_index)
 

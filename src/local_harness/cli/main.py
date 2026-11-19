@@ -1601,7 +1601,9 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("-o", "--output", default=None, help="output .so path")
 
     def _add_agent_flags(p):
-        p.add_argument("--max-steps", type=int, default=95)
+        p.add_argument("--max-steps", type=int, default=95,
+                       help="model calls allowed per turn, counted from the turn's first "
+                            "call (default 95)")
         p.add_argument(
             "--required-steps",
             help="comma-separated tools that must run before finishing",
