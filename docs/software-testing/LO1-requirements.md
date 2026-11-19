@@ -109,7 +109,7 @@ installable via uv/brew; existing test suite.
 - **Local/self-hosted promises more ability to manipulate model behaviour and context than a
   normal harness — that must ACTUALLY work better than standard non-local harnesses.**
   *(all users)*
-  - *Test (validation):* test against Claude Code, Codex, and Antigravity (named baseline
+  - *Test (validation):* test against Claude Code, Codex, pi, and opencode (named baseline
     harnesses). The measure would be the same models running the same generated DAG tasks in
     those harnesses, in this case currently Qwen3.8-27B via a command like
     `UNSLOTH_STUDIO_URL=http://<host-address>:8888 unsloth start claude --model unsloth/Qwen3.8-27B-GGUF:UD-Q8_K_XL --reasoning-effort max`

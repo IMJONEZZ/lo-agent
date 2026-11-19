@@ -14,8 +14,8 @@ repository.
 
 | LO | Learning outcome | Evidence in this repo | Status |
 |----|------------------|-----------------------|--------|
-| 1 | Requirements | [`LO1-requirements.md`](LO1-requirements.md) — requirements structured by type (incl. security and timing), levels & sub-system integration, test approaches labelled validation/verification, limitations | ✅ |
-| 2 | Test planning & instrumentation | *(test planning document + instrumented runs to follow)* | in progress |
+| 1 | Requirements | [`LO1-requirements.md`](LO1-requirements.md) — requirements structured by type (incl. security), levels & sub-system integration, test approaches labelled validation/verification, limitations | ✅ |
+| 2 | Test planning & instrumentation | [`LO2-test-plan.md`](LO2-test-plan.md) — test planning document: requirement priorities, scaffolding & instrumentation, lifecycle & risks, evaluation of the plan and of the instrumentation *(instrumented runs to follow)* | in progress |
 | 3 | Testing techniques, coverage & yield | *(implemented tests + coverage/yield results to follow)* | planned |
 | 4 | Limitations, evaluation & statistics | *(gaps, targets, statistical evaluation to follow)* | planned |
 | 5 | Reviews, inspections & CI/automation | *(review records + working CI pipeline to follow)* | planned |
