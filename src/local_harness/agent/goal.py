@@ -60,7 +60,9 @@ from .tools import Tool
 DEFAULT_CAP = 150     # rounds per stretch
 STALL_ROUNDS = 3      # rounds in a row without new work before the goal stops as stalled
 RETRY_ROUNDS = 3      # failed rounds in a row before the goal pauses
+DEFAULT_VERIFY_TIMEOUT = 600  # seconds the verify command may run (a test suite can take minutes)
 GOAL_TOOL_NAME = "goal"
+MODES = ("goal", "guided")  # /goal, /guided-goal
 JUDGE_SEED_OFFSET = 9_000_000  # judge seeds sit far from the agent's base_seed + call_index
 
 # Goal statuses. ACTIVE is the only one in which rounds run. A goal stopped as
@@ -113,9 +115,20 @@ class Goal:
     mode: str  # "goal" | "guided"
     fields: dict[str, str]
     set_seq: int
+    verify_timeout: float = DEFAULT_VERIFY_TIMEOUT  # seconds
+    judge_model: str | None = None  # None: the judge runs on the chat's own model
     status: str = ACTIVE
     reason: str = ""  # why it stopped (or was resumed)
     rounds: list[Round] = field(default_factory=list)  # the current stretch's rounds
+
+    @classmethod
+    def from_set(cls, p: dict[str, Any], seq: int = 0) -> "Goal":
+        """The goal that a GOAL_SET payload describes."""
+        return cls(condition=p["condition"], cap=int(p.get("cap") or DEFAULT_CAP),
+                   verify=(p.get("verify") or None), mode=p.get("mode") or "goal",
+                   fields=dict(p.get("fields") or {}), set_seq=seq,
+                   verify_timeout=(p.get("verify_timeout") or DEFAULT_VERIFY_TIMEOUT),
+                   judge_model=(p.get("judge_model") or None))
 
     @property
     def round(self) -> int:
@@ -159,6 +172,39 @@ class Decision:
     reason: str = ""
 
 
+# --- setting a goal ----------------------------------------------------------
+
+
+def goal_set_payload(condition: Any, *, cap: Any = None, verify: Any = None,
+                     verify_timeout: Any = None, judge_model: Any = None,
+                     mode: Any = "goal", fields: Any = None) -> dict[str, Any]:
+    """The GOAL_SET payload for a new goal, from a request's values. Raises
+    ValueError, with a message for the user, when they can't make a goal."""
+    condition = condition.strip() if isinstance(condition, str) else ""
+    if not condition:
+        raise ValueError("a goal needs a condition")
+    cap = DEFAULT_CAP if cap is None else cap
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+        raise ValueError("the round cap must be a whole number, at least 1")
+    if verify is not None and not isinstance(verify, str):
+        raise ValueError("the verify command must be a string")
+    verify = (verify or "").strip() or None
+    verify_timeout = DEFAULT_VERIFY_TIMEOUT if verify_timeout is None else verify_timeout
+    if (isinstance(verify_timeout, bool) or not isinstance(verify_timeout, (int, float))
+            or verify_timeout <= 0):
+        raise ValueError("the verify timeout must be a positive number of seconds")
+    if judge_model is not None and not isinstance(judge_model, str):
+        raise ValueError("the judge model must be a string")
+    if mode not in MODES:
+        raise ValueError(f"the goal mode must be one of {', '.join(MODES)}")
+    if fields is not None and not isinstance(fields, dict):
+        raise ValueError("the goal's fields must be an object of names to text")
+    return {"condition": condition, "cap": cap, "verify": verify,
+            "verify_timeout": verify_timeout,
+            "judge_model": (judge_model or "").strip() or None,
+            "mode": mode, "fields": {str(k): str(v) for k, v in (fields or {}).items()}}
+
+
 # --- reading the log -------------------------------------------------------
 
 
@@ -178,9 +224,7 @@ def goal_state(events: Iterable) -> Goal | None:
     for ev in events:
         t, p = ev.type, ev.payload
         if t == GOAL_SET:
-            goal = Goal(condition=p["condition"], cap=int(p.get("cap") or DEFAULT_CAP),
-                        verify=(p.get("verify") or None), mode=p.get("mode") or "goal",
-                        fields=dict(p.get("fields") or {}), set_seq=ev.seq)
+            goal = Goal.from_set(p, ev.seq)
             current = None
         elif goal is None:
             continue

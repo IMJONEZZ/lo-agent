@@ -36,7 +36,8 @@ MESSAGE_SNIPPED = "message_snipped"  # payload: {seq} — collapse that event's 
 AGENT_SPAWNED = "agent_spawned"      # payload: {child_run_id, task} — a worker the lead fanned out (Coordinator)
 JLENS_INTERVENTION = "jlens_intervention"  # payload: {specs, lens_hash, target} — a J-space edit set (Rung 6; replayable)
 # Goal mode (/goal, /guided-goal; agent/goal.py reads these, server/sessions.py writes them).
-GOAL_SET = "goal_set"            # payload: {condition, cap, verify, mode, fields} — a new goal
+GOAL_SET = "goal_set"            # payload: {condition, cap, verify, verify_timeout, judge_model,
+                                 # mode, fields} — a new goal
 GOAL_ROUND = "goal_round"        # payload: {round, source} — goal round n starts; the turn after it is that round
 GOAL_CLAIM = "goal_claim"        # payload: {round, kind, summary} — the model called the goal tool: complete | blocked
 GOAL_JUDGE = "goal_judge"        # payload: {round, mode, seed, request_body, response, timing_ms, answer, reason, parsed}

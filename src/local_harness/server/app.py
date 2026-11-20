@@ -3,10 +3,17 @@
   GET    /                                           -> the web client (single-page app)
   GET    /manifest.webmanifest, /icon.svg            -> add-to-home-screen assets
   POST   /session                 {task, preset?}   -> {run_id}
+  POST   /session                 {goal: {condition, cap?, verify?, verify_timeout?,
+                                   judge_model?, mode?, fields?}, preset?}
+                                                    -> {run_id, goal, seq} (a new session for a goal)
   POST   /session/plan             {task, n?}        -> {candidates: [{text, score}]}
-  POST   /session/{id}/message     {content, preset?}-> {run_id}
+  POST   /session/{id}/message     {content, preset?}-> {run_id, queued} (queued: a goal is
+                                                       running; it opens the goal's next round)
   POST   /session/{id}/interrupt                     -> {interrupted: bool}
   POST   /session/{id}/permission  {request_id, approved} -> {resolved: bool}
+  POST   /session/{id}/goal       {action?: set|pause|resume|clear, condition?, ...}
+                                                    -> {run_id, goal, seq} (409 if it doesn't fit)
+  GET    /session/{id}/goal                          -> {run_id, goal} (goal is null when none)
   GET    /session/{id}/events      [?replay=0]       -> SSE stream of events
   GET    /sessions                                   -> [{run_id, task, status, ...}]
   DELETE /session/{id}                               -> {deleted: true}
@@ -34,12 +41,20 @@ from starlette.responses import (
 from starlette.routing import Route
 
 from ..events.bus import TERMINAL
-from .sessions import SessionManager
+from .sessions import GoalConflict, SessionManager
 from .webui import icon_svg, index_html, manifest_json
 
 
 def _sse(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+# The goal settings a request body may carry (agent/goal.py goal_set_payload).
+GOAL_OPTIONS = ("cap", "verify", "verify_timeout", "judge_model", "mode", "fields")
+
+
+def _goal_options(body: dict) -> dict:
+    return {k: body[k] for k in GOAL_OPTIONS if body.get(k) is not None}
 
 
 def create_server_app(
@@ -50,6 +65,18 @@ def create_server_app(
 ) -> Starlette:
     async def start_session(request: Request):
         body = await request.json()
+        goal = body.get("goal")
+        if goal is not None:  # a new session for a goal
+            if not isinstance(goal, dict):
+                return JSONResponse({"error": "goal must be an object"}, status_code=400)
+            try:
+                run_id = manager.start_goal(
+                    goal.get("condition"), preset=body.get("preset"),
+                    code_mode=body.get("code_mode"), **_goal_options(goal))
+            except ValueError as e:
+                return JSONResponse({"error": str(e)}, status_code=400)
+            return JSONResponse({"run_id": run_id, "goal": manager.goal_summary(run_id),
+                                 "seq": manager.last_seq(run_id)})
         task = body.get("task", "")
         if not task:
             return JSONResponse({"error": "missing task"}, status_code=400)
@@ -59,12 +86,13 @@ def create_server_app(
     async def send_message(request: Request):
         run_id = request.path_params["run_id"]
         body = await request.json()
+        queued = manager.goal_running(run_id)  # if so, it waits for the goal's next round
         try:
             manager.send(run_id, body.get("content", ""), preset=body.get("preset"),
                          code_mode=body.get("code_mode"))
         except KeyError:
             return JSONResponse({"error": "unknown run"}, status_code=404)
-        return JSONResponse({"run_id": run_id})
+        return JSONResponse({"run_id": run_id, "queued": queued})
 
     async def plan_route(request: Request):
         body = await request.json()
@@ -83,6 +111,29 @@ def create_server_app(
         request_id = body.get("request_id", "")
         resolved = manager.resolve_permission(request_id, bool(body.get("approved")))
         return JSONResponse({"resolved": resolved})
+
+    async def goal_route(request: Request):
+        run_id = request.path_params["run_id"]
+        if request.method == "GET":
+            if manager.bus.log.run(run_id) is None:
+                return JSONResponse({"error": "unknown run"}, status_code=404)
+            return JSONResponse({"run_id": run_id, "goal": manager.goal_summary(run_id)})
+        body = json.loads(await request.body() or b"{}")
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "the body must be an object"}, status_code=400)
+        try:
+            summary = await manager.goal(
+                run_id, body.get("action") or "set", condition=body.get("condition"),
+                preset=body.get("preset"), code_mode=body.get("code_mode"),
+                **_goal_options(body))
+        except KeyError:
+            return JSONResponse({"error": "unknown run"}, status_code=404)
+        except GoalConflict as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"run_id": run_id, "goal": summary,
+                             "seq": manager.last_seq(run_id)})
 
     async def events(request: Request):
         run_id = request.path_params["run_id"]
@@ -144,6 +195,7 @@ def create_server_app(
             Route("/session/{run_id}/message", send_message, methods=["POST"]),
             Route("/session/{run_id}/interrupt", interrupt, methods=["POST"]),
             Route("/session/{run_id}/permission", permission, methods=["POST"]),
+            Route("/session/{run_id}/goal", goal_route, methods=["GET", "POST"]),
             Route("/session/{run_id}/events", events, methods=["GET"]),
             Route("/session/{run_id}", delete_session, methods=["DELETE"]),
             Route("/sessions", sessions, methods=["GET"]),

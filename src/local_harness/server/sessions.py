@@ -5,6 +5,11 @@ stream callbacks (token/reasoning/tool/notice) publish EPHEMERAL events to the
 bus, and drives it in a background task; the Agent's own persisted events flow to
 the bus automatically because it shares the bus's EventLog (see events/bus.py).
 `stream` is just `bus.subscribe`. No HTTP here — that's server/app.py.
+
+Goal mode: `start_goal` and `goal` set, pause, resume and clear a run's goal.
+A goal runs as one task for the whole goal (server/goals.py drives its rounds),
+so the session counts as running until the goal stops, an interrupt stops the
+goal, and a message sent meanwhile waits for the goal's next round.
 """
 
 from __future__ import annotations
@@ -13,6 +18,16 @@ import asyncio
 import uuid
 from typing import AsyncIterator, Callable
 
+from ..agent.goal import (
+    ACTIVE,
+    CLEARED,
+    MET,
+    PAUSED,
+    Goal,
+    goal_set_payload,
+    goal_state,
+    kickoff_prompt,
+)
 from ..agent.loop import Agent
 from ..events.bus import (
     EventBus,
@@ -23,9 +38,10 @@ from ..events.bus import (
     TOKEN_DELTA,
     TOOL_PROGRESS,
 )
-from ..events.log import AGENT_SPAWNED, Event, RUN_COMPLETED, RUN_FAILED
+from ..events.log import AGENT_SPAWNED, GOAL_SET, Event, RUN_COMPLETED, RUN_FAILED
 from ..inference.types import Message
 from ..tree.search.plan_search import plan_search
+from .goals import drive_goal, log_status
 
 MAX_COORDINATOR_DEPTH = 1  # only the top-level lead may spawn workers (no recursion)
 
@@ -36,6 +52,11 @@ MAX_COORDINATOR_DEPTH = 1  # only the top-level lead may spawn workers (no recur
 # server-side, not silently ignored. The CLI builds this from parsed args; tests
 # pass a trivial one.
 AgentFactory = Callable[..., Agent]
+
+
+class GoalConflict(Exception):
+    """A goal action that doesn't fit the session's state (HTTP 409), such as
+    setting a goal while a turn runs, or pausing a goal that isn't active."""
 
 
 class SessionManager:
@@ -60,6 +81,13 @@ class SessionManager:
         # Coordinator state: who spawned whom, how deep, and per-run peer inboxes.
         self._depth: dict[str, int] = {}
         self._inbox: dict[str, list[str]] = {}
+        # Goal mode: runs whose task is a goal loop; messages sent during a goal
+        # (they open its next round); and the (status, reason) that the next cancel
+        # of a goal loop stops the goal with (set by pause and clear).
+        self._goal_runs: set[str] = set()
+        self._queued: dict[str, list[str]] = {}
+        self._goal_stop: dict[str, tuple[str, str]] = {}
+        self._pause_orphaned_goals()
 
     # --- callbacks -------------------------------------------------------
 
@@ -247,9 +275,13 @@ class SessionManager:
         preset: str | None = None,
         code_mode: bool | None = None,
     ) -> str:
-        """Continue an existing run with a new user turn."""
+        """Continue an existing run with a new user turn. While a goal runs, the
+        message waits instead, and opens the goal's next round."""
         if self.bus.log.run(run_id) is None:
             raise KeyError(run_id)
+        if self.goal_running(run_id):
+            self._queued.setdefault(run_id, []).append(message)
+            return run_id
         self._spawn(
             run_id,
             self._drive(
@@ -295,6 +327,7 @@ class SessionManager:
             pass
         if self._needs_terminal(run_id):
             self.bus.log.append(run_id, RUN_FAILED, {"error": "interrupted"})
+        self._settle_goal(run_id)
         self._finalizers.discard(asyncio.current_task())
 
     def _needs_terminal(self, run_id: str) -> bool:
@@ -308,6 +341,159 @@ class SessionManager:
     def is_running(self, run_id: str) -> bool:
         task = self._tasks.get(run_id)
         return task is not None and not task.done()
+
+    def last_seq(self, run_id: str) -> int:
+        """The run's latest event number (-1 for none): a client that wants only
+        what happens next follows the events after it."""
+        return self.bus.log.event_count(run_id) - 1
+
+    # --- goal mode -------------------------------------------------------
+
+    def start_goal(self, condition, *, preset: str | None = None,
+                   code_mode: bool | None = None, **options) -> str:
+        """Start a new session for a goal; returns its run_id. The run's task is
+        the goal's kickoff prompt, so round 1 is the run's first turn, and the
+        session is named after the goal. `options` are goal_set_payload's."""
+        payload = goal_set_payload(condition, **options)
+        run_id = self.bus.create_run(kickoff_prompt(Goal.from_set(payload)))
+        self.bus.log.rename_run(run_id, f"goal: {payload['condition']}")
+        self.bus.log.append(run_id, GOAL_SET, payload)
+        self._spawn_goal(run_id, preset, code_mode, task_opens_round_1=True)
+        return run_id
+
+    async def goal(self, run_id: str, action: str = "set", *, condition=None,
+                   preset: str | None = None, code_mode: bool | None = None,
+                   **options) -> dict | None:
+        """Set, pause, resume or clear the run's goal; returns goal_summary().
+        Raises KeyError for an unknown run, ValueError for a bad request, and
+        GoalConflict when the action doesn't fit the session's state."""
+        log = self.bus.log
+        if log.run(run_id) is None:
+            raise KeyError(run_id)
+        current = goal_state(log.events(run_id))
+        if action == "set":
+            payload = goal_set_payload(condition, **options)
+            self._check_idle(run_id)
+            log.append(run_id, GOAL_SET, payload)
+            self._spawn_goal(run_id, preset, code_mode)
+        elif action == "pause":
+            if current is None or not current.active:
+                raise GoalConflict("there's no active goal to pause")
+            await self._stop_goal(run_id, current, PAUSED, "paused by the user")
+        elif action == "resume":
+            if current is None:
+                raise GoalConflict("there's no goal to resume")
+            if current.status == MET:
+                raise GoalConflict("the goal is already met: set a new goal instead")
+            self._check_idle(run_id)
+            log_status(log, run_id, ACTIVE, "resumed by the user", current.round)
+            self._spawn_goal(run_id, preset, code_mode)
+        elif action == "clear":
+            if current is None:
+                raise GoalConflict("there's no goal to clear")
+            await self._stop_goal(run_id, current, CLEARED, "cleared by the user")
+        else:
+            raise ValueError(f"unknown goal action {action!r}: use set, pause, resume or clear")
+        return self.goal_summary(run_id)
+
+    def goal_summary(self, run_id: str) -> dict | None:
+        """The run's goal as a client shows it; None when the run has no goal."""
+        goal = goal_state(self.bus.log.events(run_id))
+        if goal is None:
+            return None
+        return {"condition": goal.condition, "status": goal.status, "round": goal.round,
+                "cap": goal.cap, "verify": goal.verify, "mode": goal.mode,
+                "reason": goal.last_reason, "running": self.goal_running(run_id)}
+
+    def take_queued(self, run_id: str) -> str:
+        """The messages sent during the goal, joined into one; "" if there are none."""
+        return "\n\n".join(self._queued.pop(run_id, []))
+
+    def goal_running(self, run_id: str) -> bool:
+        """Whether a goal loop is running this run (so a message sent now waits)."""
+        return run_id in self._goal_runs and self.is_running(run_id)
+
+    def _check_idle(self, run_id: str) -> None:
+        if self.goal_running(run_id):
+            raise GoalConflict("a goal is already running in this session: pause or "
+                               "clear it first")
+        if self.is_running(run_id):
+            raise GoalConflict("a turn is running in this session: wait for it to "
+                               "finish, or interrupt it, first")
+
+    def _spawn_goal(self, run_id: str, preset: str | None, code_mode: bool | None,
+                    task_opens_round_1: bool = False) -> None:
+        self._goal_runs.add(run_id)
+        self._spawn(run_id, self._drive_goal(run_id, preset, code_mode, task_opens_round_1))
+
+    async def _drive_goal(self, run_id: str, preset: str | None, code_mode: bool | None,
+                          task_opens_round_1: bool) -> None:
+        try:
+            await drive_goal(self, run_id, preset=preset, code_mode=code_mode,
+                             task_opens_round_1=task_opens_round_1)
+        except asyncio.CancelledError:
+            raise  # the interrupt finalizer ends the round and stops the goal
+        except Exception as e:  # noqa: BLE001 — a bug in the loop; don't leave the goal active
+            if self._needs_terminal(run_id):
+                self.bus.log.append(run_id, RUN_FAILED, {"error": f"{type(e).__name__}: {e}"})
+            goal = goal_state(self.bus.log.events(run_id))
+            if goal is not None and goal.active:
+                log_status(self.bus.log, run_id, PAUSED,
+                           f"the goal loop failed: {type(e).__name__}: {e}", goal.round)
+        finally:
+            self._tasks.pop(run_id, None)
+            self._goal_runs.discard(run_id)
+        queued = self.take_queued(run_id)  # the goal stopped with messages still waiting
+        if queued and self.bus.log.run(run_id) is not None:
+            self.send(run_id, queued, preset=preset, code_mode=code_mode)
+
+    async def _stop_goal(self, run_id: str, goal: Goal, status: str, reason: str) -> None:
+        task = self._tasks.get(run_id)
+        if run_id in self._goal_runs and task is not None and not task.done():
+            # Cancel the loop and wait for its finalizer, which ends the round the
+            # cancel lands in and logs the stop with this status and reason.
+            self._goal_stop[run_id] = (status, reason)
+            task.cancel()
+            await self._ensure_terminal(run_id, task)
+        else:
+            log_status(self.bus.log, run_id, status, reason, goal.round)
+
+    def _settle_goal(self, run_id: str) -> None:
+        """After an interrupt: a goal still active has lost its loop, so stop it,
+        paused unless pause or clear asked for something else. Messages waiting
+        for its next round are dropped, and the reason says so."""
+        stop = self._goal_stop.pop(run_id, None)
+        dropped = len(self._queued.pop(run_id, []))
+        if self.bus.log.run(run_id) is None:  # deleted
+            return
+        goal = goal_state(self.bus.log.events(run_id))
+        if goal is None or not goal.active:
+            return
+        status, reason = stop or (PAUSED, "the goal was interrupted")
+        if dropped == 1:
+            reason += "; 1 message sent during the goal wasn't delivered"
+        elif dropped:
+            reason += f"; {dropped} messages sent during the goal weren't delivered"
+        log_status(self.bus.log, run_id, status, reason, goal.round)
+
+    def _pause_orphaned_goals(self) -> None:
+        """Pause the goals that were still active when lo last stopped. Their loop
+        stopped with that process, so nothing else would ever stop them, and a
+        client would see the session as busy for good. A round that was running
+        gets its end event first. This assumes one lo server per database: a
+        second server started on the same database would pause the first one's
+        running goals."""
+        log = self.bus.log
+        for meta in log.runs():
+            if not log.events(meta.run_id, type=GOAL_SET):
+                continue
+            goal = goal_state(log.events(meta.run_id))
+            if goal is None or not goal.active:
+                continue
+            if meta.status == "running":
+                log.append(meta.run_id, RUN_FAILED, {"error": "interrupted"})
+            log_status(log, meta.run_id, PAUSED, "lo stopped while the goal was active",
+                       goal.round)
 
     async def _drive(
         self,

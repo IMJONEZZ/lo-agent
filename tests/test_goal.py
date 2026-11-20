@@ -267,6 +267,39 @@ def test_a_users_message_can_open_a_round():
     assert goal_state(run.events()).rounds[-1].source == "user"
 
 
+def test_goal_set_payload_fills_in_the_defaults():
+    assert g.goal_set_payload("  the tests pass ") == {
+        "condition": "the tests pass", "cap": 150, "verify": None, "verify_timeout": 600,
+        "judge_model": None, "mode": "goal", "fields": {}}
+    p = g.goal_set_payload("x", cap=5, verify=" pytest -q ", verify_timeout=1200.5,
+                           judge_model="small", mode="guided", fields={"scope": 3})
+    assert (p["cap"], p["verify"], p["verify_timeout"], p["judge_model"], p["mode"],
+            p["fields"]) == (5, "pytest -q", 1200.5, "small", "guided", {"scope": "3"})
+    assert g.goal_set_payload("x", verify="   ")["verify"] is None
+
+
+def test_goal_set_payload_refuses_what_cant_make_a_goal():
+    bad = [dict(condition=""), dict(condition="   "), dict(condition=None),
+           dict(condition="x", cap=0), dict(condition="x", cap=True), dict(condition="x", cap="5"),
+           dict(condition="x", verify=["pytest"]), dict(condition="x", verify_timeout=0),
+           dict(condition="x", verify_timeout=True), dict(condition="x", judge_model=3),
+           dict(condition="x", mode="loop"), dict(condition="x", fields=["scope"])]
+    for kw in bad:
+        condition = kw.pop("condition")
+        try:
+            g.goal_set_payload(condition, **kw)
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted {condition!r} {kw}")
+
+
+def test_goal_state_reads_the_verify_timeout_and_judge_model():
+    goal = goal_state(Run(verify_timeout=30, judge_model="small").events())
+    assert (goal.verify_timeout, goal.judge_model) == (30, "small")
+    goal = goal_state(Run().events())  # a GOAL_SET without them gets the defaults
+    assert (goal.verify_timeout, goal.judge_model) == (600, None)
+
+
 # --- the judge -----------------------------------------------------------------
 
 
