@@ -27,11 +27,23 @@ POLICY_TRIGGERED = "policy_triggered"  # payload: {call_index, attempt, action, 
 GUARDRAIL = "guardrail"          # payload: {call_index, action, kind, rescued, reason, nudge?, rescued_calls?}
 RUN_COMPLETED = "run_completed"  # payload: {answer}
 RUN_FAILED = "run_failed"        # payload: {error}
-USER_MESSAGE = "user_message"    # payload: {content} — a follow-up turn continuing a run
+USER_MESSAGE = "user_message"    # payload: {content, source?} — a message in a run after its task.
+                                 # source "user" (a follow-up) or "goal" (a goal round) opens a turn;
+                                 # "harness" (the final-step note) and "peer" (another agent) arrive
+                                 # mid-turn. Logs from before sources existed have none.
 CONTEXT_COMPACTED = "context_compacted"  # payload: {method, before_tokens, after_tokens, trigger_tokens, summary?}
 MESSAGE_SNIPPED = "message_snipped"  # payload: {seq} — collapse that event's content in future context (lossless)
 AGENT_SPAWNED = "agent_spawned"      # payload: {child_run_id, task} — a worker the lead fanned out (Coordinator)
 JLENS_INTERVENTION = "jlens_intervention"  # payload: {specs, lens_hash, target} — a J-space edit set (Rung 6; replayable)
+# Goal mode (/goal, /guided-goal; agent/goal.py reads these, server/sessions.py writes them).
+GOAL_SET = "goal_set"            # payload: {condition, cap, verify, mode, fields} — a new goal
+GOAL_ROUND = "goal_round"        # payload: {round, source} — goal round n starts; the turn after it is that round
+GOAL_CLAIM = "goal_claim"        # payload: {round, kind, summary} — the model called the goal tool: complete | blocked
+GOAL_JUDGE = "goal_judge"        # payload: {round, mode, seed, request_body, response, timing_ms, answer, reason, parsed}
+                                 # — the judge's model call; replayed like MODEL_CALL, never part of the agent's context
+GOAL_VERIFY = "goal_verify"      # payload: {round, command, exit_code, output} — the goal's verify command ran
+GOAL_STATUS = "goal_status"      # payload: {status, reason, round} — the goal stopped (met, blocked, impossible,
+                                 # capped, stalled, paused), was cleared, or was resumed ("active")
 
 
 def _resolve(path: str | Path) -> str:

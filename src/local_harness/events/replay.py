@@ -1,5 +1,6 @@
 """Deterministic replay: re-issue every logged model call with its recorded
-seed and params, then compare outputs.
+seed and params, then compare outputs. That covers the agent's own calls
+(MODEL_CALL) and a goal judge's calls (GOAL_JUDGE), in the order they were made.
 
 On a Tier-1+ server (verified seed support) replay is bit-identical and the
 transcript hashes match. Mismatches mean the server, model, or sampler state
@@ -13,7 +14,10 @@ from dataclasses import dataclass, field
 
 from ..inference.client import OpenAICompatClient
 from ..inference.types import canonical_text
-from .log import MODEL_CALL, EventLog
+from .log import GOAL_JUDGE, MODEL_CALL, EventLog
+
+# Event types whose payload carries a replayable {request_body, response} call.
+REPLAYED = (MODEL_CALL, GOAL_JUDGE)
 
 
 def transcript_hash(texts: list[str]) -> str:
@@ -65,7 +69,7 @@ async def replay_run(log: EventLog, run_id: str, client: OpenAICompatClient) -> 
     originals: list[str] = []
     replays: list[str] = []
 
-    for event in log.events(run_id, type=MODEL_CALL):
+    for event in (e for e in log.events(run_id) if e.type in REPLAYED):
         body = event.payload["request_body"]
         original = _response_text(event.payload)
         response = await client.chat_body(body)
