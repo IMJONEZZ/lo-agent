@@ -293,9 +293,17 @@ class SessionManager:
             await task
         except (asyncio.CancelledError, Exception):
             pass
-        if not any(e.type in TERMINAL for e in self.bus.log.events(run_id)):
+        if self._needs_terminal(run_id):
             self.bus.log.append(run_id, RUN_FAILED, {"error": "interrupted"})
         self._finalizers.discard(asyncio.current_task())
+
+    def _needs_terminal(self, run_id: str) -> bool:
+        """Whether the run's current turn still lacks its end event. The run's
+        status is "running" from create_run, or from continue_run's reopen, until
+        that turn logs RUN_COMPLETED or RUN_FAILED, so an earlier turn's end event
+        doesn't count. A deleted run needs nothing."""
+        meta = self.bus.log.run(run_id)
+        return meta is not None and meta.status == "running"
 
     def is_running(self, run_id: str) -> bool:
         task = self._tasks.get(run_id)
@@ -319,7 +327,7 @@ class SessionManager:
             # _loop logs RUN_FAILED itself once the loop is running, but a failure
             # in agent construction (no upstream client/caps) happens before that —
             # guarantee a terminal so subscribers don't hang.
-            if not any(ev.type in TERMINAL for ev in self.bus.log.events(run_id)):
+            if self._needs_terminal(run_id):
                 self.bus.log.append(
                     run_id, RUN_FAILED, {"error": f"{type(e).__name__}: {e}"}
                 )

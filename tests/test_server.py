@@ -19,7 +19,7 @@ from local_harness.events.bus import (
     EventBus, PERMISSION_REQUEST, TOKEN_DELTA, TOOL_PROGRESS, TERMINAL,
 )
 from local_harness.events.log import (
-    EventLog, MODEL_CALL, TOOL_CALL, RUN_COMPLETED,
+    EventLog, MODEL_CALL, TOOL_CALL, RUN_COMPLETED, RUN_FAILED,
 )
 from local_harness.inference.capabilities import Capabilities
 from local_harness.inference.client import OpenAICompatClient
@@ -103,6 +103,62 @@ async def test_interrupt_emits_terminal(tmp_path):
     assert events[-1].type in TERMINAL
     # the terminal is the interrupt failure
     assert events[-1].payload.get("error") == "interrupted"
+
+
+def _hanging_manager(tmp_path, hang_on: str):
+    """A manager whose model answers "ok" at once, except to a request whose last
+    message is `hang_on`: that call hangs until it is cancelled. Returns the
+    manager, its log, and an Event set once the hanging call is in flight."""
+    log = EventLog(tmp_path / "e.db")
+    bus = EventBus(log)
+    in_flight = asyncio.Event()
+    never = asyncio.Event()
+
+    async def handler(request):
+        if json.loads(request.content)["messages"][-1]["content"] == hang_on:
+            in_flight.set()
+            await never.wait()
+        return httpx.Response(200, json=chat_response(content="ok"))
+
+    transport = httpx.MockTransport(handler)
+
+    def factory(on_token, on_tool, on_notice, preset=None):
+        client = OpenAICompatClient("http://t", "test-model", transport=transport)
+        return Agent(client, ToolRegistry([]), log, capabilities=CAPS, base_seed=1)
+
+    return SessionManager(bus, factory), log, in_flight
+
+
+async def test_interrupting_a_follow_up_turn_logs_its_end(tmp_path):
+    """The first turn's RUN_COMPLETED must not stand in for a later turn's end.
+    Interrupting a follow-up turn logged nothing, so the run stayed "running"
+    with no end event, and a client that reads the status saw it as busy forever."""
+    mgr, log, in_flight = _hanging_manager(tmp_path, hang_on="slow follow-up")
+    run_id = mgr.start("first question")
+    await mgr.drain()
+    assert log.run(run_id).status == "completed"
+
+    mgr.send(run_id, "slow follow-up")
+    await asyncio.wait_for(in_flight.wait(), 5)
+    assert mgr.interrupt(run_id) is True
+    await asyncio.gather(*list(mgr._finalizers))
+
+    assert log.run(run_id).status == "failed"
+    last = log.events(run_id)[-1]
+    assert (last.type, last.payload) == (RUN_FAILED, {"error": "interrupted"})
+
+
+async def test_deleting_a_running_session_logs_nothing_after(tmp_path):
+    """delete() interrupts the run and then deletes it. The interrupt's finalizer
+    runs after the delete, and must not log an end event for a run that's gone."""
+    mgr, log, in_flight = _hanging_manager(tmp_path, hang_on="slow task")
+    run_id = mgr.start("slow task")
+    await asyncio.wait_for(in_flight.wait(), 5)
+    mgr.delete(run_id)
+    await asyncio.gather(*list(mgr._finalizers))
+
+    assert log.run(run_id) is None
+    assert log.events(run_id) == []
 
 
 # --- HTTP surface ---------------------------------------------------------
