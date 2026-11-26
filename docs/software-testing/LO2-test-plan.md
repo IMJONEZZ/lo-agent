@@ -135,8 +135,19 @@ on? If yes, pass, if no, diagnose and fail, then fix.
 
 ### Instrumentation
 
-Pretty simple: I just need extra data collection by saving the full nested conversation history
-in a readable format to capture the full agent traces via the gateway.
+Most of the instrumentation was already in lo before this plan. The event log is append-only and
+records every model call (the full request, the response, the seed and the timing), every tool
+call with its arguments and result, every guardrail decision, and how each turn ended. Replay
+compares against it. What the plan still needed was two things, and both are now built:
+
+- **The full nested conversation history, in a readable format:** `lo export --full`
+  (`src/local_harness/events/export.py`). It adds what the normal export left out: reasoning
+  blocks, tool results in full instead of cut at 2,000 characters, guardrail nudges, how each
+  turn ended (including the error), goal rounds, and every sub-agent run, nested under the run
+  that spawned it.
+- **A tag on each run:** a new `run_tag` event (`EventLog.tag_run`). It records which DAG a run
+  was and the option it used at each step, so DAG coverage is counted from the event log instead
+  of from the test code. The DAG runner tags every run it makes.
 
 ### Scaffolding
 

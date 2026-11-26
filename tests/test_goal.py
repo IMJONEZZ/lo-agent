@@ -455,3 +455,237 @@ async def test_replay_covers_the_judges_calls(tmp_path):
     report = await replay_run(log, rid, changed)
     assert not report.identical
     assert report.mismatches[0].seq == log.events(rid, type=GOAL_JUDGE)[0].seq
+
+
+# --- gaps found by mutation testing (mutmut 3.8.1 on agent/goal.py, 23 Nov 2026) ---
+# Each test below kills mutants that survived the suite above; see
+# docs/software-testing/LO3-evidence/mutation-goal.md.
+
+
+def test_a_failed_round_at_the_cap_stops_the_goal():
+    # survived: `r.number >= goal.cap` -> `>` in the failed-round branch, which let
+    # a goal run past its cap when the last round failed
+    d = Run(cap=2).round(1, tools=work(1)).judge(1, "false").round(2, end="HTTP 500").decide()
+    assert (d.action, d.status, d.round, d.reason) == ("stop", g.CAPPED, 2,
+                                                       "all 2 rounds were used")
+
+
+def test_the_retry_prompt_names_the_next_round():
+    d = Run(cap=5).round(1, end="HTTP 500 from upstream").decide()
+    assert "This is round 2 of 5." in d.message
+
+
+def test_a_true_from_the_judge_still_needs_the_verify_command_to_pass():
+    d = (Run(verify="pytest -q").round(1, tools=work(1)).judge(1, "true")
+         .verify(1, 1, "1 failed").decide())
+    assert (d.action, d.round) == ("round", 2)
+    assert "`pytest -q` exited 1:\n1 failed" in d.message
+
+
+def test_stalling_compares_each_round_with_the_one_before():
+    # survived: comparing with the round two back, which would stall A, B, A, B
+    a, b = [("grep", '{"pattern": "A"}')], [("grep", '{"pattern": "B"}')]
+    run = Run()
+    for n, calls in enumerate((a, b, a, b, a), start=1):
+        run.round(n, tools=calls).judge(n, "false")
+    assert run.decide().action == "round"
+
+
+def test_a_chat_turn_between_pause_and_resume_doesnt_hide_the_resume():
+    # survived: `continue` -> `break` in goal_state, which stopped reading the log
+    # at the first event outside a round
+    run = Run().round(1, tools=work(1)).judge(1, "false").round(2, end="interrupted")
+    run.status(g.PAUSED, "the round was interrupted")
+    run.log.append(run.rid, USER_MESSAGE, {"content": "quick question", "source": "user"})
+    run.model_call(content="an answer")
+    run.log.append(run.rid, RUN_COMPLETED, {"answer": "an answer"})
+    run.status(g.ACTIVE, "resumed by the user")
+    assert goal_state(run.events()).status == g.ACTIVE
+    d = run.decide()
+    assert (d.action, d.round) == ("round", 1)
+
+
+def test_the_stop_reasons_the_user_sees():
+    assert Run().round(1, tools=work(1), end="interrupted").decide().reason == \
+        "the round was interrupted"
+    assert Run().round(1, claim=("blocked", "")).decide().reason == \
+        "the agent reported it is blocked"
+
+    def verdict(answer):
+        return (Run().round(1, tools=work(1), claim=("complete", "done"))
+                .judge(1, answer, mode=g.VERDICT).decide())
+
+    assert verdict(g.MET).reason == "the judge agreed the goal is met"
+    assert verdict(g.IMPOSSIBLE).reason == "the judge found the goal impossible"
+    stalled = Run()
+    for n in (1, 2, 3):
+        stalled.round(n).judge(n, "false")
+    assert stalled.decide().reason == "3 rounds in a row made no new tool calls"
+    # a plain "false" gives the next round no feedback section
+    d = Run().round(1, tools=work(1)).judge(1, "false").decide()
+    assert "Feedback from the check" not in d.message
+
+
+def test_goal_set_payload_accepts_a_cap_of_one_and_explains_refusals():
+    assert g.goal_set_payload("x", cap=1)["cap"] == 1  # the boundary is allowed
+    cases = {
+        "a goal needs a condition": dict(condition=""),
+        "the round cap must be a whole number, at least 1": dict(condition="x", cap=0),
+        "the verify command must be a string": dict(condition="x", verify=["pytest"]),
+        "the verify timeout must be a positive number of seconds":
+            dict(condition="x", verify_timeout=0),
+        "the judge model must be a string": dict(condition="x", judge_model=3),
+        "the goal mode must be one of goal, guided": dict(condition="x", mode="loop"),
+        "the goal's fields must be an object of names to text":
+            dict(condition="x", fields=["scope"]),
+    }
+    for message, kw in cases.items():
+        condition = kw.pop("condition")
+        try:
+            g.goal_set_payload(condition, **kw)
+        except ValueError as e:
+            assert str(e) == message
+        else:
+            raise AssertionError(f"accepted {condition!r} {kw}")
+
+
+def test_a_goal_set_without_optional_fields_gets_the_defaults():
+    log = EventLog(":memory:")
+    rid = log.create_run("task")
+    log.append(rid, GOAL_SET, {"condition": "the docs build"})
+    goal = goal_state(log.events(rid))
+    assert (goal.mode, goal.fields, goal.cap, goal.verify) == ("goal", {}, g.DEFAULT_CAP, None)
+
+
+async def test_the_goal_tools_reply_says_what_happens_next():
+    run = Run()
+    run.log.append(run.rid, GOAL_ROUND, {"round": 1, "source": "goal"})
+    tool = g.goal_tool(run.log, run.rid, 1)
+    tools = ToolRegistry([tool])
+    done = await tools.execute("goal", '{"status": "complete", "summary": "40 passed"}')
+    stuck = await tools.execute("goal", '{"status": "blocked", "summary": "no key"}')
+    assert done.startswith("Recorded: the goal will be checked when this reply ends.")
+    assert stuck.startswith("Recorded: the goal will stop and the user will see your reason.")
+    # a claim with no summary is logged with an empty one (decide() supplies the reason)
+    await tools.execute("goal", '{"status": "blocked"}')
+    claims = [e.payload for e in run.log.events(run.rid, type=GOAL_CLAIM)]
+    assert claims[-1] == {"round": 1, "kind": "blocked", "summary": ""}
+    # the schema the model sees
+    assert tool.parameters["type"] == "object"
+    props = tool.parameters["properties"]
+    assert props["status"] == {"type": "string", "enum": ["complete", "blocked"]}
+    assert props["summary"]["type"] == "string" and props["summary"]["description"]
+    assert tool.parameters["required"] == ["status", "summary"]
+    assert "complete" in tool.description and "blocked" in tool.description
+
+
+def test_a_guided_goals_mode_and_fields_are_read_back_from_the_log():
+    run = Run(mode="guided", fields={"scope": "docs/", "done when": "the build passes"})
+    goal = goal_state(run.events())
+    assert (goal.mode, goal.fields) == ("guided", {"scope": "docs/",
+                                                   "done when": "the build passes"})
+
+
+def test_judge_payload_keeps_the_timing_and_no_reason_for_a_check():
+    p = g.judge_payload(1, g.CHECK, {"seed": 7}, chat_response(content="false"), 12.5)
+    assert (p["timing_ms"], p["reason"]) == (12.5, "")
+
+
+def _log_with(*events):
+    """A run holding exactly these (type, payload) events after its GOAL_SET."""
+    log = EventLog(":memory:")
+    rid = log.create_run("task")
+    log.append(rid, GOAL_SET, {"condition": "the tests pass"})
+    for t, p in events:
+        log.append(rid, t, p)
+    return log.events(rid)
+
+
+def _model_call(messages, **reply):
+    return MODEL_CALL, {"request_body": {"messages": messages}, "response": chat_response(**reply)}
+
+
+def test_the_judge_request_carries_the_transcript():
+    # survived: the transcript replaced by None, so the judge saw no conversation
+    run = _judged_run()
+    goal = goal_state(run.events())
+    for mode in (g.CHECK, g.VERDICT):
+        user = g.judge_request(goal, 1, mode, run.events(), model="m")["messages"][1]["content"]
+        assert f"The conversation so far:\n\n{g.judge_transcript(run.events())}\n\n" in user
+        assert "The agent says" not in user  # no claim, no claim line
+
+
+def test_the_judge_reads_the_latest_model_call_wherever_it_sits():
+    # survived: searching back two events at a time, which can skip the latest call
+    calls = [_model_call([{"role": "user", "content": "FIRST"}], content="reply 1"),
+             _model_call([{"role": "user", "content": "SECOND"}], content="reply 2")]
+    for tail in ([], [(RUN_COMPLETED, {"answer": "x"})]):  # either parity
+        text = g.judge_transcript(_log_with(*calls, *tail))
+        assert text == "[user]\nSECOND\n\n[assistant]\nreply 2"
+
+
+def test_tool_results_from_before_the_last_call_appear_once():
+    call = {"id": "c1", "type": "function",
+            "function": {"name": "bash", "arguments": '{"cmd": "ls"}'}}
+    events = _log_with(
+        _model_call([{"role": "user", "content": "go"}],
+                    tool_calls=[("c1", "bash", '{"cmd": "ls"}')]),
+        (TOOL_CALL, {"name": "bash", "arguments": '{"cmd": "ls"}', "result": "EARLIER"}),
+        _model_call([{"role": "user", "content": "go"},
+                     {"role": "assistant", "content": None, "tool_calls": [call]},
+                     {"role": "tool", "name": "bash", "content": "EARLIER"}], content="done"))
+    assert g.judge_transcript(events) == (
+        '[user]\ngo\n\n[assistant]\n[called bash({"cmd": "ls"})]\n\n'
+        "[tool result: bash]\nEARLIER\n\n[assistant]\ndone")
+
+
+def test_the_judge_transcript_cuts_long_tool_results_and_then_old_text():
+    exact, long = "x" * 2000, "y" * 2001  # the default cut is 2000 characters
+    events = _log_with(
+        _model_call([{"role": "user", "content": "go"}],
+                    tool_calls=[("c1", "bash", "{}")]),
+        (TOOL_CALL, {"name": "bash", "arguments": "{}", "result": exact}),
+        (TOOL_CALL, {"name": "bash", "arguments": "{}", "result": long}))
+    text = g.judge_transcript(events)
+    assert f"[tool result: bash]\n{exact}\n\n" in text  # at the limit: kept whole
+    assert text.endswith(f"[tool result: bash]\n{'y' * 2000} [cut]")
+    # the whole transcript, when too long, keeps its end
+    assert g.judge_transcript(events, max_chars=len(text)) == text
+    short = g.judge_transcript(events, max_chars=100)
+    assert short == "[earlier conversation left out]\n\n" + text[-100:]
+
+
+def test_the_judge_reads_messages_whose_content_is_a_list_of_parts():
+    parts = [{"type": "text", "text": "PART-ONE"},
+             {"type": "image_url", "image_url": {"url": "data:,"}},
+             {"type": "text", "text": "PART-TWO"}]
+    text = g.judge_transcript(_log_with(_model_call([{"role": "user", "content": parts}],
+                                                    content="seen")))
+    assert text == "[user]\nPART-ONE  PART-TWO\n\n[assistant]\nseen"
+
+
+def test_the_judge_request_is_a_system_then_a_user_message():
+    goal = goal_state(_judged_run().events())
+    body = g.judge_request(goal, 1, g.CHECK, _judged_run().events(), model="m")
+    assert [m["role"] for m in body["messages"]] == ["system", "user"]
+
+
+def test_verify_feedback_keeps_the_last_20_lines_and_2000_characters():
+    lines = "\n".join(f"line {i}" for i in range(1, 26))
+    d = (Run(verify="pytest -q").round(1, tools=work(1), claim=("complete", "done"))
+         .verify(1, 1, lines).decide())
+    assert "line 6\n" in d.message and "line 5\n" not in d.message
+    wide = "z" * 2500
+    d = (Run(verify="pytest -q").round(1, tools=work(1), claim=("complete", "done"))
+         .verify(1, 1, wide).decide())
+    assert f"`pytest -q` exited 1:\n{'z' * 2000}\n" in d.message
+    assert "z" * 2001 not in d.message
+
+
+def test_a_guided_goals_fields_reach_the_prompts():
+    goal = goal_state(Run(mode="guided", fields={"scope": "docs/"}).events())
+    assert "\nscope: docs/\n" in g.kickoff_prompt(goal)
+    body = g.judge_request(goal, 1, g.CHECK, _judged_run().events(), model="m")
+    assert body["messages"][1]["content"].startswith("Goal: the tests pass\n\nscope: docs/\n\n")
+    plain = goal_state(Run().events())
+    assert "scope:" not in g.kickoff_prompt(plain)

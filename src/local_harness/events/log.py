@@ -34,6 +34,9 @@ USER_MESSAGE = "user_message"    # payload: {content, source?} — a message in 
 CONTEXT_COMPACTED = "context_compacted"  # payload: {method, before_tokens, after_tokens, trigger_tokens, summary?}
 MESSAGE_SNIPPED = "message_snipped"  # payload: {seq} — collapse that event's content in future context (lossless)
 AGENT_SPAWNED = "agent_spawned"      # payload: {child_run_id, task} — a worker the lead fanned out (Coordinator)
+RUN_TAG = "run_tag"                  # payload: {tags: {name: value}} — labels on a run, e.g. which test DAG it
+                                     # was and the option it used at each step, so runs can be counted from
+                                     # the log. Later tags override earlier ones with the same name.
 JLENS_INTERVENTION = "jlens_intervention"  # payload: {specs, lens_hash, target} — a J-space edit set (Rung 6; replayable)
 # Goal mode (/goal, /guided-goal; agent/goal.py reads these, server/sessions.py writes them).
 GOAL_SET = "goal_set"            # payload: {condition, cap, verify, verify_timeout, judge_model,
@@ -226,6 +229,20 @@ class EventLog:
             (title.strip() or None, run_id),
         )
         self._conn.commit()
+
+    def tag_run(self, run_id: str, tags: dict[str, Any]) -> int:
+        """Label a run (a RUN_TAG event). Tags are plain name → value pairs, e.g.
+        {"dag": "agents-memory-finish", "tool": "memory"}; values must be JSON."""
+        if not tags:
+            raise ValueError("tag_run needs at least one tag")
+        return self.append(run_id, RUN_TAG, {"tags": dict(tags)})
+
+    def run_tags(self, run_id: str) -> dict[str, Any]:
+        """The run's tags, merged in log order (a later tag of the same name wins)."""
+        merged: dict[str, Any] = {}
+        for ev in self.events(run_id, type=RUN_TAG):
+            merged.update(ev.payload.get("tags") or {})
+        return merged
 
     def delete_events_from(self, run_id: str, from_seq: int) -> None:
         """Drop events at or after a sequence number (used by /undo to remove

@@ -922,7 +922,7 @@ def cmd_export(args) -> None:
         run_id = runs[-1].run_id
     if log.run(run_id) is None:
         raise SystemExit(f"no such run: {run_id}")
-    md = transcript_markdown(log, run_id)
+    md = transcript_markdown(log, run_id, full=getattr(args, "full", False))
     if args.stdout:
         print(md)
         return
@@ -1835,6 +1835,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--stdout",
         action="store_true",
         help="print Markdown to stdout instead of a file",
+    )
+    p.add_argument(
+        "--full",
+        action="store_true",
+        help="the whole nested history: reasoning, tool results in full, how each "
+        "turn ended, the run's tags, and every sub-agent run",
     )
 
     p = sub.add_parser(

@@ -44,6 +44,7 @@ lo = "local_harness.cli.main:main"
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "coverage>=7.6",
 ]
 
 [build-system]
@@ -70,3 +71,22 @@ markers = [
     "live: user-simulation against a real model endpoint (needs LO_LIVE_URL); opt in with -m live",
 ]
 addopts = "-m 'not pty and not live'"
+
+# Statement + branch coverage of the package (LO3 evidence):
+#   uv run --group dev coverage run -m pytest && uv run --group dev coverage report
+[tool.coverage.run]
+branch = true
+source = ["local_harness"]
+
+[tool.coverage.report]
+skip_empty = true
+precision = 1
+
+# Mutation testing of goal mode's decision logic (LO3 evidence; mutmut writes mutants/):
+#   uv run --group dev --with mutmut==3.8.1 mutmut run --max-children 4
+[tool.mutmut]
+source_paths = ["src/"]
+only_mutate = ["src/local_harness/agent/goal.py"]
+pytest_add_cli_args_test_selection = ["tests/test_goal.py", "tests/test_goal_server.py"]
+pytest_add_cli_args = ["-p", "no:cacheprovider"]
+use_git_change_detection = false

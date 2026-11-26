@@ -17,6 +17,7 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+mutants/
 .mypy_cache/
 .ruff_cache/
 
